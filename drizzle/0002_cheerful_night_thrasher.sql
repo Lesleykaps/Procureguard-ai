@@ -1,0 +1,1 @@
+ALTER TABLE `procurement_transactions` ADD `model_features_json` text;

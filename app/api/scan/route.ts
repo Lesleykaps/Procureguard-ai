@@ -5,12 +5,13 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(request: Request) {
   try {
-    const result = await env.DB.prepare(`SELECT id, supplier, amount, pattern FROM procurement_transactions`).all<{ id: string; supplier: string; amount: number; pattern: string }>();
+    const result = await env.DB.prepare(`SELECT id, supplier, amount, pattern, model_features_json FROM procurement_transactions`).all<{ id: string; supplier: string; amount: number; pattern: string; model_features_json: string | null }>();
     const records = result.results ?? [];
     const statements = [];
     let flagged = 0;
     for (const record of records) {
-      const risk = scoreTransaction(record.pattern, record.amount);
+      const storedFeatures = record.model_features_json ? JSON.parse(record.model_features_json) as number[] : undefined;
+      const risk = scoreTransaction(record.pattern, record.amount, storedFeatures);
       if (risk >= 55) flagged += 1;
       statements.push(env.DB.prepare(`UPDATE procurement_transactions SET risk_score = ? WHERE id = ?`).bind(risk, record.id));
       if (risk >= 55) statements.push(env.DB.prepare(`UPDATE alerts SET risk_level = ? WHERE transaction_id = ?`).bind(riskLevel(risk), record.id));

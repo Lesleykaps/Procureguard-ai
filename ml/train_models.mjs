@@ -197,19 +197,19 @@ const tuned = {
 };
 
 const modelRows = [
-  { name: 'XGBoost Ensemble', version: 'synthetic-v1', description: 'Compact gradient-boosted tree ensemble trained on the synthetic procurement dataset.', probabilities: test.map(boostPredict), threshold: tuned.boost.threshold, validation: tuned.boost.metrics, featureImportance: importanceFromTrees(boostTrees), runtime: 'gradient_boosted_trees' },
-  { name: 'Random Forest', version: 'synthetic-v1', description: 'Bagged decision-tree benchmark with randomized feature selection.', probabilities: test.map(forestPredict), threshold: tuned.forest.threshold, validation: tuned.forest.metrics, featureImportance: importanceFromTrees(forestTrees), runtime: 'random_forest' },
-  { name: 'Logistic Regression', version: 'synthetic-v1', description: 'Regularized linear benchmark for transparent comparison.', probabilities: test.map(logisticPredict), threshold: tuned.logistic.threshold, validation: tuned.logistic.metrics, featureImportance: logistic.weights.map((weight) => Math.abs(weight)).map((value, _, all) => value / (all.reduce((sum, item) => sum + item, 0) || 1)), runtime: 'logistic_regression' },
+  { name: 'XGBoost Ensemble', version: 'synthetic-v1', description: 'Compact gradient-boosted tree ensemble trained on the synthetic procurement dataset.', probabilities: test.map(boostPredict), threshold: tuned.boost.threshold, validation: tuned.boost.metrics, featureImportance: importanceFromTrees(boostTrees), runtime: 'gradient_boosted_trees', parameters: { bias: boostBias, learningRate: boostLearningRate, trees: boostTrees } },
+  { name: 'Random Forest', version: 'synthetic-v1', description: 'Bagged decision-tree benchmark with randomized feature selection.', probabilities: test.map(forestPredict), threshold: tuned.forest.threshold, validation: tuned.forest.metrics, featureImportance: importanceFromTrees(forestTrees), runtime: 'random_forest', parameters: { trees: forestTrees } },
+  { name: 'Logistic Regression', version: 'synthetic-v1', description: 'Regularized linear benchmark for transparent comparison.', probabilities: test.map(logisticPredict), threshold: tuned.logistic.threshold, validation: tuned.logistic.metrics, featureImportance: logistic.weights.map((weight) => Math.abs(weight)).map((value, _, all) => value / (all.reduce((sum, item) => sum + item, 0) || 1)), runtime: 'logistic_regression', parameters: logistic },
 ];
 const artifact = {
   artifactVersion: '1.0.0',
   generatedAt: new Date().toISOString(),
   dataset: { file: 'synthetic_procurement_transactions.csv', rows: records.length, trainingRows: train.length, validationRows: validation.length, testRows: test.length, trainingRowsAfterSmote: balanced.length, fraudRate: Number((records.reduce((sum, row) => sum + row.y, 0) / records.length * 100).toFixed(2)), smoteApplied: true, label: 'synthetic_development_only' },
   features: featureNames,
-  models: modelRows.map((model) => ({ name: model.name, version: model.version, description: model.description, runtime: model.runtime, threshold: model.threshold, validationMetrics: model.validation, metrics: metrics(test, model.probabilities, model.threshold), featureImportance: model.featureImportance.map((value) => Number(value.toFixed(4))) })),
+  models: modelRows.map((model) => ({ name: model.name, version: model.version, description: model.description, runtime: model.runtime, threshold: model.threshold, validationMetrics: model.validation, metrics: metrics(test, model.probabilities, model.threshold), featureImportance: model.featureImportance.map((value) => Number(value.toFixed(4))), parameters: model.parameters })),
   ensemble: { weights: { xgboost: 0.5, randomForest: 0.3, logisticRegression: 0.2 }, threshold: tuned.ensemble.threshold, validationMetrics: tuned.ensemble.metrics, metrics: metrics(test, test.map(ensemblePredict), tuned.ensemble.threshold) },
   calibration: { method: 'maximize F2 subject to a conservative validation false-positive ceiling', validationTargetFalsePositiveRate: TARGET_VALIDATION_FPR, selectionSplit: 'validation', evaluationSplit: 'test' },
-  explanation: { method: 'exact_shapley_enumeration', featureCount: 7, note: 'The hosted Worker calculates exact Shapley values for the seven deployed ensemble features by full coalition enumeration. Python SHAP remains optional for offline plots.' },
+  explanation: { method: 'exact_shapley_enumeration', featureCount: featureNames.length, note: 'The hosted Worker scores with these serialized model parameters and calculates exact Shapley values across the full deployed feature vector by coalition enumeration. Python SHAP remains optional for offline plots.' },
   note: 'Metrics are measured on the held-out synthetic test split after choosing thresholds on validation. They are not production performance claims.',
 };
 await writeFile(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`, 'utf8');

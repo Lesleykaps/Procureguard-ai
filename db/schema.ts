@@ -17,6 +17,7 @@ export const procurementTransactions = sqliteTable('procurement_transactions', {
   status: text('status').notNull(),
   reason: text('reason').notNull(),
   sourceFile: text('source_file'),
+  modelFeaturesJson: text('model_features_json'),
   createdAt: text('created_at').notNull(),
 }, (table) => ({
   createdAtIdx: index('idx_transactions_created_at').on(table.createdAt),

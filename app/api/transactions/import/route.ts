@@ -13,11 +13,11 @@ export async function POST(request: Request) {
     const now = new Date().toISOString();
     const statements = [];
     for (const record of records) {
-      const risk = scoreTransaction(record.pattern, record.amount);
+      const risk = scoreTransaction(record.pattern, record.amount, record.modelFeatures);
       const status = 'Open';
       const reason = `Scored from ${record.pattern.toLowerCase()} signal and a $${record.amount.toLocaleString()} procurement value.`;
-      statements.push(env.DB.prepare(`INSERT OR REPLACE INTO procurement_transactions (id, supplier, amount, pattern, risk_score, status, reason, source_file, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .bind(record.id, record.supplier, record.amount, record.pattern, risk, status, reason, file.name, now));
+      statements.push(env.DB.prepare(`INSERT OR REPLACE INTO procurement_transactions (id, supplier, amount, pattern, risk_score, status, reason, source_file, model_features_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(record.id, record.supplier, record.amount, record.pattern, risk, status, reason, file.name, JSON.stringify(record.modelFeatures), now));
       if (risk >= 55) {
         statements.push(env.DB.prepare(`INSERT OR REPLACE INTO alerts (id, transaction_id, risk_level, status, assigned_to, created_at, reviewed_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
           .bind(`ALT-${record.id}`, record.id, riskLevel(risk), status, null, now, null));
