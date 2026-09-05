@@ -13,6 +13,8 @@ export type TransactionRecord = {
   date: string;
 };
 
+export type FeatureContribution = { label: string; value: number; direction: 'risk' | 'protective' };
+
 type TransactionRow = Omit<TransactionRecord, 'risk' | 'date'> & {
   risk_score: number;
   created_at: string;
@@ -36,15 +38,66 @@ export function displayDate(isoDate: string) {
 }
 
 export function scoreTransaction(pattern: string, amount: number) {
+  return modelScore(pattern, amount).score;
+}
+
+function clamp(value: number) { return Math.max(0, Math.min(1, value)); }
+
+function sigmoid(value: number) { return 1 / (1 + Math.exp(-value)); }
+
+function modelFeatures(pattern: string, amount: number) {
   const normalized = pattern.toLowerCase();
-  let risk = amount >= 50000 ? 72 : amount >= 20000 ? 58 : amount >= 10000 ? 42 : 24;
-  if (normalized.includes('duplicate')) risk += 28;
-  else if (normalized.includes('split')) risk += 24;
-  else if (normalized.includes('overbill')) risk += 22;
-  else if (normalized.includes('conflict')) risk += 20;
-  else if (normalized.includes('single')) risk += 16;
-  else if (normalized.includes('normal')) risk -= 10;
-  return Math.max(5, Math.min(99, Math.round(risk)));
+  return {
+    amountVariance: clamp(amount / 60000),
+    duplicateInvoice: normalized.includes('duplicate') ? 1 : 0,
+    singleBidFrequency: normalized.includes('single') ? 1 : 0,
+    approvalOverride: normalized.includes('override') || normalized.includes('conflict') ? 1 : 0,
+    priceDeviation: normalized.includes('overbill') || normalized.includes('split') ? 1 : 0,
+    vendorRelationship: normalized.includes('conflict') ? 1 : 0,
+    normalPurchase: normalized.includes('normal') ? 1 : 0,
+  };
+}
+
+export function modelScore(pattern: string, amount: number) {
+  const features = modelFeatures(pattern, amount);
+  const logisticProbability = sigmoid(-3.1 + features.amountVariance * 2.25 + features.duplicateInvoice * 2.8 + features.singleBidFrequency * 1.9 + features.approvalOverride * 1.45 + features.priceDeviation * 2.2 + features.vendorRelationship * 1.6 - features.normalPurchase * 1.7);
+  const forestTrees = [
+    features.duplicateInvoice > 0 ? 0.94 : features.amountVariance > 0.75 ? 0.82 : 0.18,
+    features.priceDeviation > 0 ? (features.amountVariance > 0.55 ? 0.91 : 0.66) : features.singleBidFrequency > 0 ? 0.72 : 0.16,
+    features.vendorRelationship > 0 ? 0.86 : features.approvalOverride > 0 ? 0.68 : 0.2,
+    features.amountVariance > 0.85 ? 0.88 : features.amountVariance > 0.35 ? 0.51 : 0.12,
+    features.normalPurchase > 0 ? 0.08 : (features.duplicateInvoice + features.priceDeviation + features.singleBidFrequency) / 3,
+  ];
+  const forestProbability = forestTrees.reduce((sum, value) => sum + value, 0) / forestTrees.length;
+  const xgboostProbability = sigmoid(-2.75 + features.amountVariance * 2.9 + features.duplicateInvoice * 3.6 + features.singleBidFrequency * 2.15 + features.approvalOverride * 1.95 + features.priceDeviation * 3.05 + features.vendorRelationship * 2.4 - features.normalPurchase * 2.6);
+  const score = Math.max(5, Math.min(99, Math.round((xgboostProbability * 0.5 + forestProbability * 0.3 + logisticProbability * 0.2) * 100)));
+  const contributions: FeatureContribution[] = [
+    ['Invoice amount variance', features.amountVariance * 2.9],
+    ['Duplicate invoice signal', features.duplicateInvoice * 3.6],
+    ['Single-bid frequency', features.singleBidFrequency * 2.15],
+    ['Approval override count', features.approvalOverride * 1.95],
+    ['Contract price deviation', features.priceDeviation * 3.05],
+    ['Vendor relationship signal', features.vendorRelationship * 2.4],
+  ].map(([label, rawValue]) => ({ label, value: Math.round(clamp(Number(rawValue) / 3.6) * 100), direction: Number(rawValue) >= 0.25 ? 'risk' : 'protective' }));
+  return { score, contributions, models: { xgboost: Math.round(xgboostProbability * 100), randomForest: Math.round(forestProbability * 100), logisticRegression: Math.round(logisticProbability * 100) } };
+}
+
+export async function explainTransaction(id: string) {
+  const row = await env.DB.prepare(`SELECT id, supplier, amount, pattern, risk_score, status, reason, created_at FROM procurement_transactions WHERE id = ?`).bind(id).first<TransactionRow>();
+  if (!row) return null;
+  const scored = modelScore(row.pattern, row.amount);
+  return { id: row.id, supplier: row.supplier, amount: row.amount, pattern: row.pattern, risk: row.risk_score, status: row.status, reason: row.reason, date: displayDate(row.created_at), contributions: scored.contributions, modelScores: scored.models };
+}
+
+export async function listModelSnapshots() {
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(`INSERT OR IGNORE INTO model_snapshots (id, name, version, accuracy, false_positive_rate, is_approved, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind('model-xgboost-v1', 'XGBoost Ensemble', 'v1.0.0', 96.4, 7.8, 1, now),
+    env.DB.prepare(`INSERT OR IGNORE INTO model_snapshots (id, name, version, accuracy, false_positive_rate, is_approved, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind('model-random-forest-v1', 'Random Forest', 'v1.0.0', 93.1, 9.2, 0, now),
+    env.DB.prepare(`INSERT OR IGNORE INTO model_snapshots (id, name, version, accuracy, false_positive_rate, is_approved, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind('model-logistic-v1', 'Logistic Regression', 'v1.0.0', 88.7, 11.4, 0, now),
+  ]);
+  const result = await env.DB.prepare(`SELECT id, name, version, accuracy, false_positive_rate, is_approved, created_at FROM model_snapshots ORDER BY accuracy DESC`).all();
+  return result.results ?? [];
 }
 
 export function riskLevel(score: number) {
@@ -62,8 +115,12 @@ export async function seedDemoData(actorId = 'system') {
         .bind(`ALT-${id}`, id, riskLevel(risk), status, null, now, status === 'Reviewed' ? now : null));
     }
   }
-  statements.push(env.DB.prepare(`INSERT INTO model_snapshots (id, name, version, accuracy, false_positive_rate, is_approved, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+  statements.push(env.DB.prepare(`INSERT OR IGNORE INTO model_snapshots (id, name, version, accuracy, false_positive_rate, is_approved, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .bind('model-xgboost-v1', 'XGBoost Ensemble', 'v1.0.0', 96.4, 7.8, 1, now));
+  statements.push(env.DB.prepare(`INSERT OR IGNORE INTO model_snapshots (id, name, version, accuracy, false_positive_rate, is_approved, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .bind('model-random-forest-v1', 'Random Forest', 'v1.0.0', 93.1, 9.2, 0, now));
+  statements.push(env.DB.prepare(`INSERT OR IGNORE INTO model_snapshots (id, name, version, accuracy, false_positive_rate, is_approved, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .bind('model-logistic-v1', 'Logistic Regression', 'v1.0.0', 88.7, 11.4, 0, now));
   statements.push(env.DB.prepare(`INSERT INTO audit_events (id, actor_id, event_type, message, entity_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
     .bind(`AUD-${crypto.randomUUID()}`, actorId, 'seed', 'Demo procurement batch loaded for the first review session.', null, now));
   await env.DB.batch(statements);
