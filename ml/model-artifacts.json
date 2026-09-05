@@ -1,6 +1,6 @@
 {
   "artifactVersion": "1.0.0",
-  "generatedAt": "2026-09-05T22:58:23.507Z",
+  "generatedAt": "2026-09-05T23:10:48.813Z",
   "dataset": {
     "file": "synthetic_procurement_transactions.csv",
     "rows": 12000,
@@ -218,8 +218,9 @@
     "evaluationSplit": "test"
   },
   "explanation": {
-    "method": "model_feature_contribution_profile",
-    "note": "The hosted Worker exposes feature contributions from the trained ensemble profile. Exact per-record SHAP values can be enabled when the approved Python SHAP runtime is available."
+    "method": "exact_shapley_enumeration",
+    "featureCount": 7,
+    "note": "The hosted Worker calculates exact Shapley values for the seven deployed ensemble features by full coalition enumeration. Python SHAP remains optional for offline plots."
   },
   "note": "Metrics are measured on the held-out synthetic test split after choosing thresholds on validation. They are not production performance claims."
 }

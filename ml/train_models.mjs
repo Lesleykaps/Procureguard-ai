@@ -209,7 +209,7 @@ const artifact = {
   models: modelRows.map((model) => ({ name: model.name, version: model.version, description: model.description, runtime: model.runtime, threshold: model.threshold, validationMetrics: model.validation, metrics: metrics(test, model.probabilities, model.threshold), featureImportance: model.featureImportance.map((value) => Number(value.toFixed(4))) })),
   ensemble: { weights: { xgboost: 0.5, randomForest: 0.3, logisticRegression: 0.2 }, threshold: tuned.ensemble.threshold, validationMetrics: tuned.ensemble.metrics, metrics: metrics(test, test.map(ensemblePredict), tuned.ensemble.threshold) },
   calibration: { method: 'maximize F2 subject to a conservative validation false-positive ceiling', validationTargetFalsePositiveRate: TARGET_VALIDATION_FPR, selectionSplit: 'validation', evaluationSplit: 'test' },
-  explanation: { method: 'model_feature_contribution_profile', note: 'The hosted Worker exposes feature contributions from the trained ensemble profile. Exact per-record SHAP values can be enabled when the approved Python SHAP runtime is available.' },
+  explanation: { method: 'exact_shapley_enumeration', featureCount: 7, note: 'The hosted Worker calculates exact Shapley values for the seven deployed ensemble features by full coalition enumeration. Python SHAP remains optional for offline plots.' },
   note: 'Metrics are measured on the held-out synthetic test split after choosing thresholds on validation. They are not production performance claims.',
 };
 await writeFile(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`, 'utf8');

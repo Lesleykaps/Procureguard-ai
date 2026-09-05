@@ -14,7 +14,7 @@ export type TransactionRecord = {
   date: string;
 };
 
-export type FeatureContribution = { label: string; value: number; direction: 'risk' | 'protective' };
+export type FeatureContribution = { label: string; value: number; contribution: number; direction: 'risk' | 'protective' };
 
 type TransactionRow = Omit<TransactionRecord, 'risk' | 'date'> & {
   risk_score: number;
@@ -46,7 +46,19 @@ function clamp(value: number) { return Math.max(0, Math.min(1, value)); }
 
 function sigmoid(value: number) { return 1 / (1 + Math.exp(-value)); }
 
-function modelFeatures(pattern: string, amount: number) {
+type RuntimeFeatures = {
+  amountVariance: number;
+  duplicateInvoice: number;
+  singleBidFrequency: number;
+  approvalOverride: number;
+  priceDeviation: number;
+  vendorRelationship: number;
+  normalPurchase: number;
+};
+
+const runtimeFeatureNames: (keyof RuntimeFeatures)[] = ['amountVariance', 'duplicateInvoice', 'singleBidFrequency', 'approvalOverride', 'priceDeviation', 'vendorRelationship', 'normalPurchase'];
+
+function modelFeatures(pattern: string, amount: number): RuntimeFeatures {
   const normalized = pattern.toLowerCase();
   return {
     amountVariance: clamp(amount / 60000),
@@ -59,8 +71,7 @@ function modelFeatures(pattern: string, amount: number) {
   };
 }
 
-export function modelScore(pattern: string, amount: number) {
-  const features = modelFeatures(pattern, amount);
+function modelProbabilities(features: RuntimeFeatures) {
   const logisticProbability = sigmoid(-3.1 + features.amountVariance * 2.25 + features.duplicateInvoice * 2.8 + features.singleBidFrequency * 1.9 + features.approvalOverride * 1.45 + features.priceDeviation * 2.2 + features.vendorRelationship * 1.6 - features.normalPurchase * 1.7);
   const forestTrees = [
     features.duplicateInvoice > 0 ? 0.94 : features.amountVariance > 0.75 ? 0.82 : 0.18,
@@ -71,23 +82,47 @@ export function modelScore(pattern: string, amount: number) {
   ];
   const forestProbability = forestTrees.reduce((sum, value) => sum + value, 0) / forestTrees.length;
   const xgboostProbability = sigmoid(-2.75 + features.amountVariance * 2.9 + features.duplicateInvoice * 3.6 + features.singleBidFrequency * 2.15 + features.approvalOverride * 1.95 + features.priceDeviation * 3.05 + features.vendorRelationship * 2.4 - features.normalPurchase * 2.6);
-  const score = Math.max(5, Math.min(99, Math.round((xgboostProbability * 0.5 + forestProbability * 0.3 + logisticProbability * 0.2) * 100)));
-  const contributions: FeatureContribution[] = [
-    ['Invoice amount variance', features.amountVariance * 2.9],
-    ['Duplicate invoice signal', features.duplicateInvoice * 3.6],
-    ['Single-bid frequency', features.singleBidFrequency * 2.15],
-    ['Approval override count', features.approvalOverride * 1.95],
-    ['Contract price deviation', features.priceDeviation * 3.05],
-    ['Vendor relationship signal', features.vendorRelationship * 2.4],
-  ].map(([label, rawValue]) => ({ label, value: Math.round(clamp(Number(rawValue) / 3.6) * 100), direction: Number(rawValue) >= 0.25 ? 'risk' : 'protective' }));
-  return { score, contributions, models: { xgboost: Math.round(xgboostProbability * 100), randomForest: Math.round(forestProbability * 100), logisticRegression: Math.round(logisticProbability * 100) } };
+  return { xgboost: xgboostProbability, randomForest: forestProbability, logisticRegression: logisticProbability, ensemble: xgboostProbability * 0.5 + forestProbability * 0.3 + logisticProbability * 0.2 };
+}
+
+function coalitionProbability(features: RuntimeFeatures, mask: number, actual: RuntimeFeatures) {
+  const coalition = Object.fromEntries(runtimeFeatureNames.map((name, index) => [name, mask & (1 << index) ? actual[name] : 0])) as RuntimeFeatures;
+  return modelProbabilities(coalition).ensemble;
+}
+
+function exactShapley(features: RuntimeFeatures) {
+  const featureCount = runtimeFeatureNames.length;
+  const factorial = [1];
+  for (let index = 1; index <= featureCount; index += 1) factorial[index] = factorial[index - 1] * index;
+  const values = Array(featureCount).fill(0) as number[];
+  const fullMask = (1 << featureCount) - 1;
+  const baseProbability = coalitionProbability(features, 0, features);
+  for (let featureIndex = 0; featureIndex < featureCount; featureIndex += 1) {
+    for (let subset = 0; subset <= fullMask; subset += 1) {
+      if (subset & (1 << featureIndex)) continue;
+      const subsetSize = subset.toString(2).split('1').length - 1;
+      const weight = factorial[subsetSize] * factorial[featureCount - subsetSize - 1] / factorial[featureCount];
+      values[featureIndex] += weight * (coalitionProbability(features, subset | (1 << featureIndex), features) - coalitionProbability(features, subset, features));
+    }
+  }
+  return { values, baseProbability, fullProbability: coalitionProbability(features, fullMask, features) };
+}
+
+export function modelScore(pattern: string, amount: number) {
+  const features = modelFeatures(pattern, amount);
+  const probabilities = modelProbabilities(features);
+  const shap = exactShapley(features);
+  const labels = ['Invoice amount variance', 'Duplicate invoice signal', 'Single-bid frequency', 'Approval override count', 'Contract price deviation', 'Vendor relationship signal', 'Normal purchase signal'];
+  const maxAbs = Math.max(...shap.values.map((value) => Math.abs(value)), 0.0001);
+  const contributions: FeatureContribution[] = shap.values.map((contribution, index) => ({ label: labels[index], contribution: Number(contribution.toFixed(4)), value: Math.round(Math.abs(contribution) / maxAbs * 100), direction: contribution >= 0 ? 'risk' : 'protective' }));
+  return { score: Math.max(5, Math.min(99, Math.round(probabilities.ensemble * 100))), contributions, models: { xgboost: Math.round(probabilities.xgboost * 100), randomForest: Math.round(probabilities.randomForest * 100), logisticRegression: Math.round(probabilities.logisticRegression * 100) }, baseRisk: Math.round(shap.baseProbability * 100), ensembleProbability: Number(probabilities.ensemble.toFixed(4)), explanationMethod: 'exact_shapley_enumeration' };
 }
 
 export async function explainTransaction(id: string) {
   const row = await env.DB.prepare(`SELECT id, supplier, amount, pattern, risk_score, status, reason, created_at FROM procurement_transactions WHERE id = ?`).bind(id).first<TransactionRow>();
   if (!row) return null;
   const scored = modelScore(row.pattern, row.amount);
-  return { id: row.id, supplier: row.supplier, amount: row.amount, pattern: row.pattern, risk: row.risk_score, status: row.status, reason: row.reason, date: displayDate(row.created_at), contributions: scored.contributions, modelScores: scored.models, explanationMethod: trainedArtifact.explanation.method, decisionThreshold: trainedArtifact.ensemble.threshold };
+  return { id: row.id, supplier: row.supplier, amount: row.amount, pattern: row.pattern, risk: row.risk_score, status: row.status, reason: row.reason, date: displayDate(row.created_at), contributions: scored.contributions, modelScores: scored.models, baseRisk: scored.baseRisk, ensembleProbability: scored.ensembleProbability, explanationMethod: scored.explanationMethod, decisionThreshold: trainedArtifact.ensemble.threshold };
 }
 
 export async function listModelSnapshots() {
