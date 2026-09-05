@@ -37,7 +37,7 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -125,8 +125,9 @@ export function AppShell({ authenticatedUser }: { authenticatedUser: { displayNa
   const [toast, setToast] = useState('');
   const [isScanning, setIsScanning] = useState(false);
   const [reportReady, setReportReady] = useState(false);
+  const [liveAudit, setLiveAudit] = useState(auditEvents as string[][]);
   const fileRef = useRef<HTMLInputElement>(null);
-  const selected = transactions.find((item) => item.id === selectedId) ?? transactions[0];
+  const selected = transactions.find((item) => item.id === selectedId) ?? transactions[0] ?? seedTransactions[0];
   const userName = authenticatedUser?.displayName ?? 'Demo Auditor';
   const visibleTransactions = useMemo(() => transactions.filter((item) => `${item.id} ${item.supplier} ${item.pattern}`.toLowerCase().includes(query.toLowerCase())), [transactions, query]);
   const visibleAlerts = useMemo(() => visibleTransactions.filter((item) => {
@@ -135,27 +136,81 @@ export function AppShell({ authenticatedUser }: { authenticatedUser: { displayNa
     return riskLevel(item.risk) === alertFilter;
   }), [visibleTransactions, alertFilter]);
 
+  useEffect(() => {
+    let active = true;
+    async function loadLiveData() {
+      try {
+        const [transactionsResponse, auditResponse] = await Promise.all([
+          fetch('/api/transactions', { cache: 'no-store' }),
+          fetch('/api/audit', { cache: 'no-store' }),
+        ]);
+        const transactionPayload = await transactionsResponse.json() as { transactions?: Txn[] };
+        if (active && transactionsResponse.ok && transactionPayload.transactions?.length) setTransactions(transactionPayload.transactions);
+        const auditPayload = await auditResponse.json() as { events?: { message: string; actor_id: string | null; created_at: string }[] };
+        if (active && auditResponse.ok && auditPayload.events?.length) setLiveAudit(auditPayload.events.map((event) => [event.message, event.actor_id ?? 'System', new Date(event.created_at).toLocaleString('en', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' })]));
+      } catch {
+        // The seeded client view remains usable while the local or hosted data service is unavailable.
+      }
+    }
+    void loadLiveData();
+    return () => { active = false; };
+  }, []);
+
   function notify(message: string) {
     setToast(message);
     window.setTimeout(() => setToast(''), 3200);
   }
 
-  function runScan() {
+  async function runScan() {
     setIsScanning(true);
     notify('Scan started — evaluating the latest procurement batch.');
-    window.setTimeout(() => { setIsScanning(false); notify('Scan complete — 3 priority alerts require review.'); }, 1200);
+    try {
+      const response = await fetch('/api/scan', { method: 'POST' });
+      const payload = await response.json() as { scanned?: number; flagged?: number; error?: string };
+      if (!response.ok) throw new Error(payload.error ?? 'Scan unavailable');
+      const refreshed = await fetch('/api/transactions', { cache: 'no-store' });
+      const refreshedPayload = await refreshed.json() as { transactions?: Txn[] };
+      if (refreshed.ok && refreshedPayload.transactions?.length) setTransactions(refreshedPayload.transactions);
+      setLiveAudit((events) => [[`Scan completed for ${payload.scanned ?? 0} procurement records; ${payload.flagged ?? 0} require attention.`, 'System', new Date().toLocaleString('en', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' })], ...events]);
+      notify(`Scan complete — ${payload.flagged ?? 0} records require attention.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Scan service unavailable.');
+    } finally {
+      setIsScanning(false);
+    }
   }
 
-  function updateStatus(id: string, status: Txn['status']) {
+  async function updateStatus(id: string, status: Txn['status']) {
     setTransactions((items) => items.map((item) => item.id === id ? { ...item, status } : item));
     notify(`${id} marked as ${status.toLowerCase()}.`);
+    try {
+      const response = await fetch('/api/transactions', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, status }) });
+      if (!response.ok) throw new Error('Update failed');
+      setLiveAudit((events) => [[`Transaction ${id} marked as ${status}.`, userName, new Date().toLocaleString('en', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' })], ...events]);
+    } catch {
+      notify('Status changed in this view, but the audit service is unavailable.');
+    }
   }
 
-  function handleUpload(event: React.ChangeEvent<HTMLInputElement>) {
+  async function handleUpload(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
-    notify(`${file.name} validated — 24 procurement records ready for scoring.`);
+    const form = new FormData();
+    form.append('file', file);
+    try {
+      const response = await fetch('/api/transactions/import', { method: 'POST', body: form });
+      const payload = await response.json() as { imported?: number; error?: string };
+      if (!response.ok) throw new Error(payload.error ?? 'Import failed');
+      const refreshed = await fetch('/api/transactions', { cache: 'no-store' });
+      const refreshedPayload = await refreshed.json() as { transactions?: Txn[] };
+      if (refreshed.ok && refreshedPayload.transactions?.length) setTransactions(refreshedPayload.transactions);
+      setLiveAudit((events) => [[`${payload.imported ?? 0} procurement records imported from ${file.name}.`, userName, new Date().toLocaleString('en', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' })], ...events]);
+      notify(`${payload.imported ?? 0} records imported and scored.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Unable to import this CSV.');
+    }
     setView('transactions');
+    event.target.value = '';
   }
 
   const can = (module: string) => roleCopy[role].allowed.includes(module);
@@ -182,7 +237,7 @@ export function AppShell({ authenticatedUser }: { authenticatedUser: { displayNa
         {view === 'alerts' && <AlertsView alerts={visibleAlerts} filter={alertFilter} setFilter={setAlertFilter} setSelectedId={(id) => { setSelectedId(id); setView('explain'); }} updateStatus={updateStatus} />}
         {view === 'explain' && <ExplainView selected={selected} setView={setView} />}
         {view === 'models' && <ModelsView role={role} can={can} notify={notify} />}
-        {view === 'audit' && <AuditView />}
+        {view === 'audit' && <AuditView events={liveAudit} />}
         {view === 'reports' && <ReportsView reportReady={reportReady} setReportReady={setReportReady} notify={notify} />}
       </main>
     </div>
@@ -193,9 +248,10 @@ export function AppShell({ authenticatedUser }: { authenticatedUser: { displayNa
 
 function Dashboard({ transactions, setView, setSelectedId, runScan }: { transactions: Txn[]; setView: (view: View) => void; setSelectedId: (id: string) => void; runScan: () => void }) {
   const highRisk = transactions.filter((item) => item.risk >= 80);
+  const openHighRisk = highRisk.filter((item) => item.status === 'Open').length;
   return <>
     <SectionHeader eyebrow="Live risk intelligence" title="Command dashboard" subtitle="A clear view of procurement risk, model health, and the cases that need attention first." action={<Button onClick={runScan} variant="outline" className="h-9 border-[rgba(24,216,207,.4)] bg-[#0c2638] text-[#28ded4] hover:bg-[#10384c]"><RefreshCw size={14} /> Refresh intelligence</Button>} />
-    <div className="metric-grid"><MetricCard label="High-risk alerts" value="3" note={<><strong>+3</strong> in the last hour</>} icon={<AlertTriangle size={14} className="text-[#ff5877]" />} tone="red" /><MetricCard label="Detection latency" value="38s" note={<>Target: <strong>under 60s</strong></>} icon={<Clock3 size={14} className="text-[#2edcd1]" />} /><MetricCard label="False positive rate" value="7.8%" note={<>Objective: <strong>below 10%</strong></>} icon={<Gauge size={14} className="text-[#ffc24a]" />} tone="orange" /><MetricCard label="Model accuracy" value="96.4%" note={<><strong>XGBoost</strong> validation</>} icon={<BarChart3 size={14} className="text-[#2edcd1]" />} /></div>
+    <div className="metric-grid"><MetricCard label="High-risk alerts" value={String(openHighRisk)} note={<><strong>{highRisk.length}</strong> high-risk records tracked</>} icon={<AlertTriangle size={14} className="text-[#ff5877]" />} tone="red" /><MetricCard label="Detection latency" value="38s" note={<>Target: <strong>under 60s</strong></>} icon={<Clock3 size={14} className="text-[#2edcd1]" />} /><MetricCard label="False positive rate" value="7.8%" note={<>Objective: <strong>below 10%</strong></>} icon={<Gauge size={14} className="text-[#ffc24a]" />} tone="orange" /><MetricCard label="Model accuracy" value="96.4%" note={<><strong>XGBoost</strong> validation</>} icon={<BarChart3 size={14} className="text-[#2edcd1]" />} /></div>
     <div className="dashboard-grid"><section className="section-card map-card"><div className="card-heading"><div><p>Live risk intelligence</p><h2>Procurement risk map</h2></div><Badge className="bg-[#0b756f] text-[#79fff0]">Live</Badge></div><div className="map-stage"><div className="map-core" /><span className="map-label orange" style={{ left: '17%', top: '24%' }}>Invoice split</span><span className="map-label red" style={{ right: '13%', top: '28%' }}>Single bidder</span><span className="map-label red" style={{ left: '22%', bottom: '22%' }}>Overbilling</span><span className="map-label green" style={{ right: '17%', bottom: '20%' }}>Vendor conflict</span><div className="absolute bottom-3 left-3 flex items-center gap-4 text-[10px] text-[#7898a7]"><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-[#ff4c6d]" />High risk</span><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-[#ffbe45]" />Medium</span><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-[#22d8c2]" />Low</span></div></div></section><section className="section-card priority-card"><div className="card-heading"><div><p>Immediate action</p><h2>Priority alerts</h2></div><button className="action-link" onClick={() => setView('alerts')}>View all <ArrowUpRight className="inline" size={13} /></button></div>{highRisk.slice(0, 3).map((item) => <div className="alert-item" key={item.id}><div className="alert-row"><RiskBadge score={item.risk} /><span className="mono text-[11px] text-[#a6c0c7]">{item.amount}</span></div><h3>{item.id} · {item.supplier}</h3><p>{item.reason}</p><button className="action-link mt-3" onClick={() => { setSelectedId(item.id); setView('explain'); }}>Investigate <ChevronRight className="inline" size={13} /></button></div>)}</section></div>
   </>;
 }
@@ -219,8 +275,8 @@ function ModelsView({ role, can, notify }: { role: Role; can: (module: string) =
   return <><SectionHeader eyebrow="Model governance" title="Model performance" subtitle="Compare the candidate models and keep the approved scoring snapshot visible to reviewers." action={<Button disabled={!can('Models')} onClick={() => notify('Retrain snapshot requires an approved model governance action.')} variant="outline" className="border-[rgba(24,216,207,.38)] text-[#21d9d0]"><RefreshCw size={14} /> Retrain snapshot</Button>} /><div className="section-card mt-7 p-5"><div className="mb-5 flex items-center justify-between"><div><p className="eyebrow">Algorithm performance</p><h2 className="mt-2 text-base font-semibold">Approved comparison</h2></div><Badge variant="outline" className="border-[#1a827f] text-[#2ee0d4]">Current: XGBoost Ensemble</Badge></div><div className="model-grid">{models.map(([name, score, description, value], index) => <section className={`section-card model-card ${index === 0 ? 'selected' : ''}`} key={String(name)}><div className="flex items-center justify-between"><span className="tiny muted">{name}</span>{index === 0 && <Badge className="bg-[#0d716b] text-[#72faea]">Selected</Badge>}</div><div className="model-score">{score}</div><p>{description}</p><div className="progress mt-5"><span style={{ width: `${value}%` }} /></div><div className="mt-2 flex justify-between tiny muted"><span>Validation accuracy</span><span>{index === 0 ? 'SHAP ready' : 'Benchmark'}</span></div></section>)}</div></div><div className="section-card mt-4 flex items-center gap-3 p-4 text-xs"><LockKeyhole size={16} className="text-[#ffc24a]" /><span className="muted">Only Admins can retrain or replace approved models.</span><span className="ml-auto text-[#d8ebed]">Viewing as {role}</span></div></>;
 }
 
-function AuditView() {
-  return <><SectionHeader eyebrow="Tamper-evident records" title="Audit trail" subtitle="A chronological record of scans, alerts, reviews, exports, and security events." action={<Button variant="outline" className="border-[rgba(111,166,188,.22)] text-[#b3cbd1]"><Download size={14} /> Export evidence</Button>} /><section className="section-card mt-7"><div className="card-heading"><div><p>System activity</p><h2>Recent events</h2></div><Badge className="bg-[#0b3b45] text-[#2de0cf]">Integrity verified</Badge></div><div className="audit-list">{auditEvents.map(([message, actor, date]) => <div className="audit-entry" key={message}><i className="audit-dot" /><div><strong>{message}</strong><div className="mt-1"><span>{actor}</span><span className="mx-2 text-[#3d6372]">·</span><span>{date}</span></div></div><button className="action-link" aria-label="View audit event"><ChevronRight size={15} /></button></div>)}</div></section><div className="section-card mt-4 grid gap-4 p-4 text-xs sm:grid-cols-3"><div className="flex items-center gap-2"><ShieldCheck size={16} className="text-[#24d9c9]" /><span><strong>Append-only</strong><br /><span className="tiny muted">Records cannot be deleted by reviewers.</span></span></div><div className="flex items-center gap-2"><Users size={16} className="text-[#24d9c9]" /><span><strong>Access logged</strong><br /><span className="tiny muted">Who viewed what and when.</span></span></div><div className="flex items-center gap-2"><FileCheck2 size={16} className="text-[#24d9c9]" /><span><strong>Evidence ready</strong><br /><span className="tiny muted">Reports retain their source events.</span></span></div></div></>;
+function AuditView({ events }: { events: string[][] }) {
+  return <><SectionHeader eyebrow="Tamper-evident records" title="Audit trail" subtitle="A chronological record of scans, alerts, reviews, exports, and security events." action={<Button variant="outline" className="border-[rgba(111,166,188,.22)] text-[#b3cbd1]"><Download size={14} /> Export evidence</Button>} /><section className="section-card mt-7"><div className="card-heading"><div><p>System activity</p><h2>Recent events</h2></div><Badge className="bg-[#0b3b45] text-[#2de0cf]">Integrity verified</Badge></div><div className="audit-list">{events.map(([message, actor, date], index) => <div className="audit-entry" key={`${message}-${index}`}><i className="audit-dot" /><div><strong>{message}</strong><div className="mt-1"><span>{actor}</span><span className="mx-2 text-[#3d6372]">·</span><span>{date}</span></div></div><button className="action-link" aria-label="View audit event"><ChevronRight size={15} /></button></div>)}</div></section><div className="section-card mt-4 grid gap-4 p-4 text-xs sm:grid-cols-3"><div className="flex items-center gap-2"><ShieldCheck size={16} className="text-[#24d9c9]" /><span><strong>Append-only</strong><br /><span className="tiny muted">Records cannot be deleted by reviewers.</span></span></div><div className="flex items-center gap-2"><Users size={16} className="text-[#24d9c9]" /><span><strong>Access logged</strong><br /><span className="tiny muted">Who viewed what and when.</span></span></div><div className="flex items-center gap-2"><FileCheck2 size={16} className="text-[#24d9c9]" /><span><strong>Evidence ready</strong><br /><span className="tiny muted">Reports retain their source events.</span></span></div></div></>;
 }
 
 function ReportsView({ reportReady, setReportReady, notify }: { reportReady: boolean; setReportReady: (ready: boolean) => void; notify: (message: string) => void }) {

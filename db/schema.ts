@@ -1,4 +1,4 @@
-import { integer, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { integer, real, sqliteTable, text, index } from 'drizzle-orm/sqlite-core';
 
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
@@ -18,7 +18,9 @@ export const procurementTransactions = sqliteTable('procurement_transactions', {
   reason: text('reason').notNull(),
   sourceFile: text('source_file'),
   createdAt: text('created_at').notNull(),
-});
+}, (table) => ({
+  createdAtIdx: index('idx_transactions_created_at').on(table.createdAt),
+}));
 
 export const alerts = sqliteTable('alerts', {
   id: text('id').primaryKey(),
@@ -28,7 +30,10 @@ export const alerts = sqliteTable('alerts', {
   assignedTo: text('assigned_to'),
   createdAt: text('created_at').notNull(),
   reviewedAt: text('reviewed_at'),
-});
+}, (table) => ({
+  statusIdx: index('idx_alerts_status').on(table.status),
+  transactionIdx: index('idx_alerts_transaction_id').on(table.transactionId),
+}));
 
 export const auditEvents = sqliteTable('audit_events', {
   id: text('id').primaryKey(),
