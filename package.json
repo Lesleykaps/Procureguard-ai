@@ -11,7 +11,8 @@
     "start": "wrangler dev --config dist/server/wrangler.json",
     "lint": "oxlint",
     "format": "oxfmt",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "data:generate": "node ml/generate_synthetic_dataset.mjs"
   },
   "dependencies": {
     "react": "19.2.6",
