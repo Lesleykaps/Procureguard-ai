@@ -125,6 +125,8 @@ export function AppShell({ authenticatedUser }: { authenticatedUser: { displayNa
   const [toast, setToast] = useState('');
   const [isScanning, setIsScanning] = useState(false);
   const [reportReady, setReportReady] = useState(false);
+  const [modelAccuracy, setModelAccuracy] = useState('96.4%');
+  const [modelFalsePositiveRate, setModelFalsePositiveRate] = useState('7.8%');
   const [liveAudit, setLiveAudit] = useState(auditEvents as string[][]);
   const fileRef = useRef<HTMLInputElement>(null);
   const selected = transactions.find((item) => item.id === selectedId) ?? transactions[0] ?? seedTransactions[0];
@@ -140,14 +142,20 @@ export function AppShell({ authenticatedUser }: { authenticatedUser: { displayNa
     let active = true;
     async function loadLiveData() {
       try {
-        const [transactionsResponse, auditResponse] = await Promise.all([
+        const [transactionsResponse, auditResponse, modelsResponse] = await Promise.all([
           fetch('/api/transactions', { cache: 'no-store' }),
           fetch('/api/audit', { cache: 'no-store' }),
+          fetch('/api/models', { cache: 'no-store' }),
         ]);
         const transactionPayload = await transactionsResponse.json() as { transactions?: Txn[] };
         if (active && transactionsResponse.ok && transactionPayload.transactions?.length) setTransactions(transactionPayload.transactions);
         const auditPayload = await auditResponse.json() as { events?: { message: string; actor_id: string | null; created_at: string }[] };
         if (active && auditResponse.ok && auditPayload.events?.length) setLiveAudit(auditPayload.events.map((event) => [event.message, event.actor_id ?? 'System', new Date(event.created_at).toLocaleString('en', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' })]));
+        const modelsPayload = await modelsResponse.json() as { models?: { accuracy: number; false_positive_rate: number }[] };
+        if (active && modelsResponse.ok && modelsPayload.models?.[0]) {
+          setModelAccuracy(`${modelsPayload.models[0].accuracy}%`);
+          setModelFalsePositiveRate(`${modelsPayload.models[0].false_positive_rate}%`);
+        }
       } catch {
         // The seeded client view remains usable while the local or hosted data service is unavailable.
       }
@@ -232,7 +240,7 @@ export function AppShell({ authenticatedUser }: { authenticatedUser: { displayNa
 
       <main className="content">
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2"><span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#0f3447] text-[#23ddd2]"><UserRound size={14} /></span><span className="text-xs text-[#a1bbc3]">Signed in as <strong className="text-[#e7f5f7]">{userName}</strong></span><Badge variant="outline" className="border-[#1a827f] text-[#2ee0d4]">{role}</Badge></div><div className="role-switcher"><span className="tiny muted self-center">Preview role:</span>{(Object.keys(roleCopy) as Role[]).map((item) => <button key={item} className={`role-chip ${role === item ? 'active' : ''}`} onClick={() => { setRole(item); notify(`Previewing ${item} permissions.`); }}>{item}</button>)}</div></div>
-        {view === 'dashboard' && <Dashboard transactions={transactions} setView={setView} setSelectedId={setSelectedId} runScan={runScan} />}
+        {view === 'dashboard' && <Dashboard transactions={transactions} modelAccuracy={modelAccuracy} modelFalsePositiveRate={modelFalsePositiveRate} setView={setView} setSelectedId={setSelectedId} runScan={runScan} />}
         {view === 'transactions' && <TransactionsView transactions={visibleTransactions} onUpload={() => fileRef.current?.click()} updateStatus={updateStatus} setSelectedId={(id) => { setSelectedId(id); setView('explain'); }} />}
         {view === 'alerts' && <AlertsView alerts={visibleAlerts} filter={alertFilter} setFilter={setAlertFilter} setSelectedId={(id) => { setSelectedId(id); setView('explain'); }} updateStatus={updateStatus} />}
         {view === 'explain' && <ExplainView selected={selected} setView={setView} />}
@@ -246,12 +254,12 @@ export function AppShell({ authenticatedUser }: { authenticatedUser: { displayNa
   </div>;
 }
 
-function Dashboard({ transactions, setView, setSelectedId, runScan }: { transactions: Txn[]; setView: (view: View) => void; setSelectedId: (id: string) => void; runScan: () => void }) {
+function Dashboard({ transactions, modelAccuracy, modelFalsePositiveRate, setView, setSelectedId, runScan }: { transactions: Txn[]; modelAccuracy: string; modelFalsePositiveRate: string; setView: (view: View) => void; setSelectedId: (id: string) => void; runScan: () => void }) {
   const highRisk = transactions.filter((item) => item.risk >= 80);
   const openHighRisk = highRisk.filter((item) => item.status === 'Open').length;
   return <>
     <SectionHeader eyebrow="Live risk intelligence" title="Command dashboard" subtitle="A clear view of procurement risk, model health, and the cases that need attention first." action={<Button onClick={runScan} variant="outline" className="h-9 border-[rgba(24,216,207,.4)] bg-[#0c2638] text-[#28ded4] hover:bg-[#10384c]"><RefreshCw size={14} /> Refresh intelligence</Button>} />
-    <div className="metric-grid"><MetricCard label="High-risk alerts" value={String(openHighRisk)} note={<><strong>{highRisk.length}</strong> high-risk records tracked</>} icon={<AlertTriangle size={14} className="text-[#ff5877]" />} tone="red" /><MetricCard label="Detection latency" value="38s" note={<>Target: <strong>under 60s</strong></>} icon={<Clock3 size={14} className="text-[#2edcd1]" />} /><MetricCard label="False positive rate" value="7.8%" note={<>Objective: <strong>below 10%</strong></>} icon={<Gauge size={14} className="text-[#ffc24a]" />} tone="orange" /><MetricCard label="Model accuracy" value="96.4%" note={<><strong>XGBoost</strong> validation</>} icon={<BarChart3 size={14} className="text-[#2edcd1]" />} /></div>
+    <div className="metric-grid"><MetricCard label="High-risk alerts" value={String(openHighRisk)} note={<><strong>{highRisk.length}</strong> high-risk records tracked</>} icon={<AlertTriangle size={14} className="text-[#ff5877]" />} tone="red" /><MetricCard label="Detection latency" value="38s" note={<>Target: <strong>under 60s</strong></>} icon={<Clock3 size={14} className="text-[#2edcd1]" />} /><MetricCard label="False positive rate" value={modelFalsePositiveRate} note={<>Objective: <strong>below 10%</strong></>} icon={<Gauge size={14} className="text-[#ffc24a]" />} tone="orange" /><MetricCard label="Model accuracy" value={modelAccuracy} note={<><strong>XGBoost</strong> test split</>} icon={<BarChart3 size={14} className="text-[#2edcd1]" />} /></div>
     <div className="dashboard-grid"><section className="section-card map-card"><div className="card-heading"><div><p>Live risk intelligence</p><h2>Procurement risk map</h2></div><Badge className="bg-[#0b756f] text-[#79fff0]">Live</Badge></div><div className="map-stage"><div className="map-core" /><span className="map-label orange" style={{ left: '17%', top: '24%' }}>Invoice split</span><span className="map-label red" style={{ right: '13%', top: '28%' }}>Single bidder</span><span className="map-label red" style={{ left: '22%', bottom: '22%' }}>Overbilling</span><span className="map-label green" style={{ right: '17%', bottom: '20%' }}>Vendor conflict</span><div className="absolute bottom-3 left-3 flex items-center gap-4 text-[10px] text-[#7898a7]"><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-[#ff4c6d]" />High risk</span><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-[#ffbe45]" />Medium</span><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-[#22d8c2]" />Low</span></div></div></section><section className="section-card priority-card"><div className="card-heading"><div><p>Immediate action</p><h2>Priority alerts</h2></div><button className="action-link" onClick={() => setView('alerts')}>View all <ArrowUpRight className="inline" size={13} /></button></div>{highRisk.slice(0, 3).map((item) => <div className="alert-item" key={item.id}><div className="alert-row"><RiskBadge score={item.risk} /><span className="mono text-[11px] text-[#a6c0c7]">{item.amount}</span></div><h3>{item.id} · {item.supplier}</h3><p>{item.reason}</p><button className="action-link mt-3" onClick={() => { setSelectedId(item.id); setView('explain'); }}>Investigate <ChevronRight className="inline" size={13} /></button></div>)}</section></div>
   </>;
 }

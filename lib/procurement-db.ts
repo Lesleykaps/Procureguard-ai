@@ -1,4 +1,5 @@
 import { env } from 'cloudflare:workers';
+import trainedArtifact from '../ml/model-artifacts.json';
 
 export type RiskStatus = 'Open' | 'Reviewed' | 'Cleared';
 
@@ -91,11 +92,12 @@ export async function explainTransaction(id: string) {
 
 export async function listModelSnapshots() {
   const now = new Date().toISOString();
-  await env.DB.batch([
-    env.DB.prepare(`INSERT OR IGNORE INTO model_snapshots (id, name, version, accuracy, false_positive_rate, is_approved, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind('model-xgboost-v1', 'XGBoost Ensemble', 'v1.0.0', 96.4, 7.8, 1, now),
-    env.DB.prepare(`INSERT OR IGNORE INTO model_snapshots (id, name, version, accuracy, false_positive_rate, is_approved, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind('model-random-forest-v1', 'Random Forest', 'v1.0.0', 93.1, 9.2, 0, now),
-    env.DB.prepare(`INSERT OR IGNORE INTO model_snapshots (id, name, version, accuracy, false_positive_rate, is_approved, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind('model-logistic-v1', 'Logistic Regression', 'v1.0.0', 88.7, 11.4, 0, now),
+  const ids = ['model-xgboost-v1', 'model-random-forest-v1', 'model-logistic-v1'];
+  const statements = trainedArtifact.models.flatMap((model, index) => [
+    env.DB.prepare(`INSERT OR IGNORE INTO model_snapshots (id, name, version, accuracy, false_positive_rate, is_approved, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(ids[index], model.name, model.version, model.metrics.accuracy, model.metrics.falsePositiveRate, index === 0 ? 1 : 0, now),
+    env.DB.prepare(`UPDATE model_snapshots SET version = ?, accuracy = ?, false_positive_rate = ? WHERE id = ?`).bind(model.version, model.metrics.accuracy, model.metrics.falsePositiveRate, ids[index]),
   ]);
+  await env.DB.batch(statements);
   const result = await env.DB.prepare(`SELECT id, name, version, accuracy, false_positive_rate, is_approved, created_at FROM model_snapshots ORDER BY accuracy DESC`).all();
   return result.results ?? [];
 }

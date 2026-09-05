@@ -12,4 +12,12 @@ Regenerate the dataset with:
 pnpm run data:generate
 ```
 
+Train the local model artifacts and evaluate the held-out test split with:
+
+```text
+pnpm run models:train
+```
+
+The resulting `model-artifacts.json` records the feature set, SMOTE row counts, test metrics, confusion matrices, and model feature importance used by the model registry view.
+
 The generated file is a development fixture. Replace it with approved, de-identified data before making claims about production accuracy or false-positive performance.

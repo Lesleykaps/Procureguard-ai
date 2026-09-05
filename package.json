@@ -12,7 +12,8 @@
     "lint": "oxlint",
     "format": "oxfmt",
     "db:generate": "drizzle-kit generate",
-    "data:generate": "node ml/generate_synthetic_dataset.mjs"
+    "data:generate": "node ml/generate_synthetic_dataset.mjs",
+    "models:train": "node ml/train_models.mjs"
   },
   "dependencies": {
     "react": "19.2.6",

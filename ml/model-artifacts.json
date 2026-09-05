@@ -1,0 +1,151 @@
+{
+  "artifactVersion": "1.0.0",
+  "generatedAt": "2026-09-05T22:10:37.434Z",
+  "dataset": {
+    "file": "synthetic_procurement_transactions.csv",
+    "rows": 12000,
+    "trainingRows": 8390,
+    "validationRows": 1810,
+    "testRows": 1800,
+    "trainingRowsAfterSmote": 13270,
+    "fraudRate": 21.22,
+    "smoteApplied": true,
+    "label": "synthetic_development_only"
+  },
+  "features": [
+    "amount_scale",
+    "contract_ratio",
+    "bidder_scarcity",
+    "bid_window_risk",
+    "price_deviation",
+    "duplicate_signal",
+    "invoice_velocity",
+    "approval_override",
+    "domain_match",
+    "split_ratio",
+    "supplier_youth",
+    "related_supplier_signal"
+  ],
+  "models": [
+    {
+      "name": "XGBoost Ensemble",
+      "version": "synthetic-v1",
+      "description": "Compact gradient-boosted tree ensemble trained on the synthetic procurement dataset.",
+      "runtime": "gradient_boosted_trees",
+      "metrics": {
+        "accuracy": 84.06,
+        "precision": 59.96,
+        "recall": 72.49,
+        "falsePositiveRate": 12.87,
+        "rocAuc": 0.8373,
+        "confusionMatrix": {
+          "truePositive": 274,
+          "trueNegative": 1239,
+          "falsePositive": 183,
+          "falseNegative": 104
+        }
+      },
+      "featureImportance": [
+        0,
+        0.4286,
+        0,
+        0.0714,
+        0,
+        0.1429,
+        0,
+        0.0714,
+        0.1429,
+        0.1429,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "Random Forest",
+      "version": "synthetic-v1",
+      "description": "Bagged decision-tree benchmark with randomized feature selection.",
+      "runtime": "random_forest",
+      "metrics": {
+        "accuracy": 93.78,
+        "precision": 88.89,
+        "recall": 80.42,
+        "falsePositiveRate": 2.67,
+        "rocAuc": 0.9257,
+        "confusionMatrix": {
+          "truePositive": 304,
+          "trueNegative": 1384,
+          "falsePositive": 38,
+          "falseNegative": 74
+        }
+      },
+      "featureImportance": [
+        0.0411,
+        0.2021,
+        0.0822,
+        0.1062,
+        0.0753,
+        0.0548,
+        0.0959,
+        0.0959,
+        0.0548,
+        0.0582,
+        0.024,
+        0.1096
+      ]
+    },
+    {
+      "name": "Logistic Regression",
+      "version": "synthetic-v1",
+      "description": "Regularized linear benchmark for transparent comparison.",
+      "runtime": "logistic_regression",
+      "metrics": {
+        "accuracy": 84,
+        "precision": 59.74,
+        "recall": 73.02,
+        "falsePositiveRate": 13.08,
+        "rocAuc": 0.8543,
+        "confusionMatrix": {
+          "truePositive": 276,
+          "trueNegative": 1236,
+          "falsePositive": 186,
+          "falseNegative": 102
+        }
+      },
+      "featureImportance": [
+        0.0139,
+        0.0628,
+        0.082,
+        0.0809,
+        0.0743,
+        0.1117,
+        0.0783,
+        0.1282,
+        0.1326,
+        0.1126,
+        0.0495,
+        0.0733
+      ]
+    }
+  ],
+  "ensemble": {
+    "weights": {
+      "xgboost": 0.5,
+      "randomForest": 0.3,
+      "logisticRegression": 0.2
+    },
+    "metrics": {
+      "accuracy": 90.83,
+      "precision": 82.57,
+      "recall": 71.43,
+      "falsePositiveRate": 4.01,
+      "rocAuc": 0.9107,
+      "confusionMatrix": {
+        "truePositive": 270,
+        "trueNegative": 1365,
+        "falsePositive": 57,
+        "falseNegative": 108
+      }
+    }
+  },
+  "note": "Metrics are measured on the held-out synthetic test split. They are not production performance claims."
+}
