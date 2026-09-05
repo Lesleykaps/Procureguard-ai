@@ -1,6 +1,6 @@
 {
   "artifactVersion": "1.0.0",
-  "generatedAt": "2026-09-05T22:10:37.434Z",
+  "generatedAt": "2026-09-05T22:58:23.507Z",
   "dataset": {
     "file": "synthetic_procurement_transactions.csv",
     "rows": 12000,
@@ -32,17 +32,33 @@
       "version": "synthetic-v1",
       "description": "Compact gradient-boosted tree ensemble trained on the synthetic procurement dataset.",
       "runtime": "gradient_boosted_trees",
+      "threshold": 0.56,
+      "validationMetrics": {
+        "threshold": 0.56,
+        "accuracy": 89.78,
+        "precision": 91.61,
+        "recall": 60.77,
+        "falsePositiveRate": 1.65,
+        "rocAuc": 0.8427,
+        "confusionMatrix": {
+          "truePositive": 251,
+          "trueNegative": 1374,
+          "falsePositive": 23,
+          "falseNegative": 162
+        }
+      },
       "metrics": {
-        "accuracy": 84.06,
-        "precision": 59.96,
-        "recall": 72.49,
-        "falsePositiveRate": 12.87,
+        "threshold": 0.56,
+        "accuracy": 89.78,
+        "precision": 89.11,
+        "recall": 58.47,
+        "falsePositiveRate": 1.9,
         "rocAuc": 0.8373,
         "confusionMatrix": {
-          "truePositive": 274,
-          "trueNegative": 1239,
-          "falsePositive": 183,
-          "falseNegative": 104
+          "truePositive": 221,
+          "trueNegative": 1395,
+          "falsePositive": 27,
+          "falseNegative": 157
         }
       },
       "featureImportance": [
@@ -65,17 +81,33 @@
       "version": "synthetic-v1",
       "description": "Bagged decision-tree benchmark with randomized feature selection.",
       "runtime": "random_forest",
+      "threshold": 0.41,
+      "validationMetrics": {
+        "threshold": 0.41,
+        "accuracy": 92.04,
+        "precision": 81.5,
+        "recall": 84.26,
+        "falsePositiveRate": 5.65,
+        "rocAuc": 0.9064,
+        "confusionMatrix": {
+          "truePositive": 348,
+          "trueNegative": 1318,
+          "falsePositive": 79,
+          "falseNegative": 65
+        }
+      },
       "metrics": {
-        "accuracy": 93.78,
-        "precision": 88.89,
-        "recall": 80.42,
-        "falsePositiveRate": 2.67,
+        "threshold": 0.41,
+        "accuracy": 92.78,
+        "precision": 81.16,
+        "recall": 85.45,
+        "falsePositiveRate": 5.27,
         "rocAuc": 0.9257,
         "confusionMatrix": {
-          "truePositive": 304,
-          "trueNegative": 1384,
-          "falsePositive": 38,
-          "falseNegative": 74
+          "truePositive": 323,
+          "trueNegative": 1347,
+          "falsePositive": 75,
+          "falseNegative": 55
         }
       },
       "featureImportance": [
@@ -98,17 +130,33 @@
       "version": "synthetic-v1",
       "description": "Regularized linear benchmark for transparent comparison.",
       "runtime": "logistic_regression",
+      "threshold": 0.53,
+      "validationMetrics": {
+        "threshold": 0.53,
+        "accuracy": 86.02,
+        "precision": 70.94,
+        "recall": 65.62,
+        "falsePositiveRate": 7.95,
+        "rocAuc": 0.8508,
+        "confusionMatrix": {
+          "truePositive": 271,
+          "trueNegative": 1286,
+          "falsePositive": 111,
+          "falseNegative": 142
+        }
+      },
       "metrics": {
-        "accuracy": 84,
-        "precision": 59.74,
-        "recall": 73.02,
-        "falsePositiveRate": 13.08,
+        "threshold": 0.53,
+        "accuracy": 86.33,
+        "precision": 68.64,
+        "recall": 64.29,
+        "falsePositiveRate": 7.81,
         "rocAuc": 0.8543,
         "confusionMatrix": {
-          "truePositive": 276,
-          "trueNegative": 1236,
-          "falsePositive": 186,
-          "falseNegative": 102
+          "truePositive": 243,
+          "trueNegative": 1311,
+          "falsePositive": 111,
+          "falseNegative": 135
         }
       },
       "featureImportance": [
@@ -133,19 +181,45 @@
       "randomForest": 0.3,
       "logisticRegression": 0.2
     },
+    "threshold": 0.46,
+    "validationMetrics": {
+      "threshold": 0.46,
+      "accuracy": 88.34,
+      "precision": 73.93,
+      "recall": 75.54,
+      "falsePositiveRate": 7.87,
+      "rocAuc": 0.9018,
+      "confusionMatrix": {
+        "truePositive": 312,
+        "trueNegative": 1287,
+        "falsePositive": 110,
+        "falseNegative": 101
+      }
+    },
     "metrics": {
-      "accuracy": 90.83,
-      "precision": 82.57,
-      "recall": 71.43,
-      "falsePositiveRate": 4.01,
+      "threshold": 0.46,
+      "accuracy": 88.28,
+      "precision": 70.42,
+      "recall": 76.19,
+      "falsePositiveRate": 8.51,
       "rocAuc": 0.9107,
       "confusionMatrix": {
-        "truePositive": 270,
-        "trueNegative": 1365,
-        "falsePositive": 57,
-        "falseNegative": 108
+        "truePositive": 288,
+        "trueNegative": 1301,
+        "falsePositive": 121,
+        "falseNegative": 90
       }
     }
   },
-  "note": "Metrics are measured on the held-out synthetic test split. They are not production performance claims."
+  "calibration": {
+    "method": "maximize F2 subject to a conservative validation false-positive ceiling",
+    "validationTargetFalsePositiveRate": 8,
+    "selectionSplit": "validation",
+    "evaluationSplit": "test"
+  },
+  "explanation": {
+    "method": "model_feature_contribution_profile",
+    "note": "The hosted Worker exposes feature contributions from the trained ensemble profile. Exact per-record SHAP values can be enabled when the approved Python SHAP runtime is available."
+  },
+  "note": "Metrics are measured on the held-out synthetic test split after choosing thresholds on validation. They are not production performance claims."
 }

@@ -87,7 +87,7 @@ export async function explainTransaction(id: string) {
   const row = await env.DB.prepare(`SELECT id, supplier, amount, pattern, risk_score, status, reason, created_at FROM procurement_transactions WHERE id = ?`).bind(id).first<TransactionRow>();
   if (!row) return null;
   const scored = modelScore(row.pattern, row.amount);
-  return { id: row.id, supplier: row.supplier, amount: row.amount, pattern: row.pattern, risk: row.risk_score, status: row.status, reason: row.reason, date: displayDate(row.created_at), contributions: scored.contributions, modelScores: scored.models };
+  return { id: row.id, supplier: row.supplier, amount: row.amount, pattern: row.pattern, risk: row.risk_score, status: row.status, reason: row.reason, date: displayDate(row.created_at), contributions: scored.contributions, modelScores: scored.models, explanationMethod: trainedArtifact.explanation.method, decisionThreshold: trainedArtifact.ensemble.threshold };
 }
 
 export async function listModelSnapshots() {
@@ -98,8 +98,12 @@ export async function listModelSnapshots() {
     env.DB.prepare(`UPDATE model_snapshots SET version = ?, accuracy = ?, false_positive_rate = ? WHERE id = ?`).bind(model.version, model.metrics.accuracy, model.metrics.falsePositiveRate, ids[index]),
   ]);
   await env.DB.batch(statements);
-  const result = await env.DB.prepare(`SELECT id, name, version, accuracy, false_positive_rate, is_approved, created_at FROM model_snapshots ORDER BY accuracy DESC`).all();
-  return result.results ?? [];
+  const result = await env.DB.prepare(`SELECT id, name, version, accuracy, false_positive_rate, is_approved, created_at FROM model_snapshots ORDER BY is_approved DESC, accuracy DESC`).all();
+  const modelsByName = new Map(trainedArtifact.models.map((model) => [model.name, model]));
+  return (result.results ?? []).map((row) => {
+    const model = modelsByName.get(String(row.name));
+    return { ...row, decision_threshold: model?.threshold ?? 0.5, roc_auc: model?.metrics.rocAuc ?? 0.5, validation_false_positive_rate: model?.validationMetrics.falsePositiveRate ?? null };
+  });
 }
 
 export function riskLevel(score: number) {

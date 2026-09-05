@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 const dataPath = join(process.cwd(), 'ml', 'synthetic_procurement_transactions.csv');
 const artifactPath = join(process.cwd(), 'ml', 'model-artifacts.json');
+const TARGET_VALIDATION_FPR = 8;
 let state = 9072026 >>> 0;
 function random() { state = (state * 1664525 + 1013904223) >>> 0; return state / 4294967296; }
 function integer(min, max) { return Math.floor(random() * (max - min + 1)) + min; }
@@ -97,8 +98,7 @@ function regressionTree(rows, depth) {
   return { feature: best.feature, threshold: best.threshold, left: regressionTree(best.left, depth - 1), right: regressionTree(best.right, depth - 1) };
 }
 function regressionPredict(tree, x) { return tree.leaf === undefined ? regressionPredict(x[tree.feature] <= tree.threshold ? tree.left : tree.right, x) : tree.leaf; }
-function metrics(rows, probabilities) {
-  const threshold = 0.5;
+function metrics(rows, probabilities, threshold = 0.5) {
   let tp = 0, tn = 0, fp = 0, fn = 0;
   rows.forEach((row, index) => {
     const prediction = probabilities[index] >= threshold ? 1 : 0;
@@ -108,7 +108,19 @@ function metrics(rows, probabilities) {
   let positives = 0, negatives = 0, rankSum = 0;
   ordered.forEach((item, index) => { if (item.label) { positives += 1; rankSum += index + 1; } else negatives += 1; });
   const auc = positives && negatives ? (positives * negatives - (rankSum - positives * (positives + 1) / 2)) / (positives * negatives) : 0.5;
-  return { accuracy: Number(((tp + tn) / Math.max(rows.length, 1) * 100).toFixed(2)), precision: Number((tp / Math.max(tp + fp, 1) * 100).toFixed(2)), recall: Number((tp / Math.max(tp + fn, 1) * 100).toFixed(2)), falsePositiveRate: Number((fp / Math.max(fp + tn, 1) * 100).toFixed(2)), rocAuc: Number(auc.toFixed(4)), confusionMatrix: { truePositive: tp, trueNegative: tn, falsePositive: fp, falseNegative: fn } };
+  return { threshold: Number(threshold.toFixed(2)), accuracy: Number(((tp + tn) / Math.max(rows.length, 1) * 100).toFixed(2)), precision: Number((tp / Math.max(tp + fp, 1) * 100).toFixed(2)), recall: Number((tp / Math.max(tp + fn, 1) * 100).toFixed(2)), falsePositiveRate: Number((fp / Math.max(fp + tn, 1) * 100).toFixed(2)), rocAuc: Number(auc.toFixed(4)), confusionMatrix: { truePositive: tp, trueNegative: tn, falsePositive: fp, falseNegative: fn } };
+}
+function tuneThreshold(rows, probabilities) {
+  let best = null;
+  for (let step = 5; step <= 95; step += 1) {
+    const threshold = step / 100;
+    const result = metrics(rows, probabilities, threshold);
+    const f2 = (5 * result.precision * result.recall) / Math.max(4 * result.precision + result.recall, 1);
+    if (result.falsePositiveRate <= TARGET_VALIDATION_FPR && (!best || f2 > best.f2)) best = { threshold, f2, metrics: result };
+  }
+  if (best) return best;
+  const fallback = Array.from({ length: 91 }, (_, index) => (index + 5) / 100).map((threshold) => ({ threshold, metrics: metrics(rows, probabilities, threshold) })).sort((left, right) => left.metrics.falsePositiveRate - right.metrics.falsePositiveRate || right.metrics.recall - left.metrics.recall)[0];
+  return { ...fallback, f2: 0 };
 }
 function importanceFromTrees(trees) {
   const counts = Array(featureNames.length).fill(0);
@@ -171,22 +183,37 @@ const boostPredict = (row) => {
 };
 const ensemblePredict = (row) => boostPredict(row) * 0.5 + forestPredict(row) * 0.3 + logisticPredict(row) * 0.2;
 
+const validationProbabilities = {
+  boost: validation.map(boostPredict),
+  forest: validation.map(forestPredict),
+  logistic: validation.map(logisticPredict),
+  ensemble: validation.map(ensemblePredict),
+};
+const tuned = {
+  boost: tuneThreshold(validation, validationProbabilities.boost),
+  forest: tuneThreshold(validation, validationProbabilities.forest),
+  logistic: tuneThreshold(validation, validationProbabilities.logistic),
+  ensemble: tuneThreshold(validation, validationProbabilities.ensemble),
+};
+
 const modelRows = [
-  { name: 'XGBoost Ensemble', version: 'synthetic-v1', description: 'Compact gradient-boosted tree ensemble trained on the synthetic procurement dataset.', probabilities: test.map(boostPredict), featureImportance: importanceFromTrees(boostTrees), runtime: 'gradient_boosted_trees' },
-  { name: 'Random Forest', version: 'synthetic-v1', description: 'Bagged decision-tree benchmark with randomized feature selection.', probabilities: test.map(forestPredict), featureImportance: importanceFromTrees(forestTrees), runtime: 'random_forest' },
-  { name: 'Logistic Regression', version: 'synthetic-v1', description: 'Regularized linear benchmark for transparent comparison.', probabilities: test.map(logisticPredict), featureImportance: logistic.weights.map((weight) => Math.abs(weight)).map((value, _, all) => value / (all.reduce((sum, item) => sum + item, 0) || 1)), runtime: 'logistic_regression' },
+  { name: 'XGBoost Ensemble', version: 'synthetic-v1', description: 'Compact gradient-boosted tree ensemble trained on the synthetic procurement dataset.', probabilities: test.map(boostPredict), threshold: tuned.boost.threshold, validation: tuned.boost.metrics, featureImportance: importanceFromTrees(boostTrees), runtime: 'gradient_boosted_trees' },
+  { name: 'Random Forest', version: 'synthetic-v1', description: 'Bagged decision-tree benchmark with randomized feature selection.', probabilities: test.map(forestPredict), threshold: tuned.forest.threshold, validation: tuned.forest.metrics, featureImportance: importanceFromTrees(forestTrees), runtime: 'random_forest' },
+  { name: 'Logistic Regression', version: 'synthetic-v1', description: 'Regularized linear benchmark for transparent comparison.', probabilities: test.map(logisticPredict), threshold: tuned.logistic.threshold, validation: tuned.logistic.metrics, featureImportance: logistic.weights.map((weight) => Math.abs(weight)).map((value, _, all) => value / (all.reduce((sum, item) => sum + item, 0) || 1)), runtime: 'logistic_regression' },
 ];
 const artifact = {
   artifactVersion: '1.0.0',
   generatedAt: new Date().toISOString(),
   dataset: { file: 'synthetic_procurement_transactions.csv', rows: records.length, trainingRows: train.length, validationRows: validation.length, testRows: test.length, trainingRowsAfterSmote: balanced.length, fraudRate: Number((records.reduce((sum, row) => sum + row.y, 0) / records.length * 100).toFixed(2)), smoteApplied: true, label: 'synthetic_development_only' },
   features: featureNames,
-  models: modelRows.map((model) => ({ name: model.name, version: model.version, description: model.description, runtime: model.runtime, metrics: metrics(test, model.probabilities), featureImportance: model.featureImportance.map((value) => Number(value.toFixed(4))) })),
-  ensemble: { weights: { xgboost: 0.5, randomForest: 0.3, logisticRegression: 0.2 }, metrics: metrics(test, test.map(ensemblePredict)) },
-  note: 'Metrics are measured on the held-out synthetic test split. They are not production performance claims.',
+  models: modelRows.map((model) => ({ name: model.name, version: model.version, description: model.description, runtime: model.runtime, threshold: model.threshold, validationMetrics: model.validation, metrics: metrics(test, model.probabilities, model.threshold), featureImportance: model.featureImportance.map((value) => Number(value.toFixed(4))) })),
+  ensemble: { weights: { xgboost: 0.5, randomForest: 0.3, logisticRegression: 0.2 }, threshold: tuned.ensemble.threshold, validationMetrics: tuned.ensemble.metrics, metrics: metrics(test, test.map(ensemblePredict), tuned.ensemble.threshold) },
+  calibration: { method: 'maximize F2 subject to a conservative validation false-positive ceiling', validationTargetFalsePositiveRate: TARGET_VALIDATION_FPR, selectionSplit: 'validation', evaluationSplit: 'test' },
+  explanation: { method: 'model_feature_contribution_profile', note: 'The hosted Worker exposes feature contributions from the trained ensemble profile. Exact per-record SHAP values can be enabled when the approved Python SHAP runtime is available.' },
+  note: 'Metrics are measured on the held-out synthetic test split after choosing thresholds on validation. They are not production performance claims.',
 };
 await writeFile(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`, 'utf8');
 console.log(`Trained 3 models on ${train.length.toLocaleString()} source training rows (${balanced.length.toLocaleString()} after SMOTE).`);
-for (const model of artifact.models) console.log(`${model.name}: accuracy ${model.metrics.accuracy}%, recall ${model.metrics.recall}%, false positives ${model.metrics.falsePositiveRate}%, ROC-AUC ${model.metrics.rocAuc}.`);
-console.log(`Ensemble: accuracy ${artifact.ensemble.metrics.accuracy}%, recall ${artifact.ensemble.metrics.recall}%, false positives ${artifact.ensemble.metrics.falsePositiveRate}%, ROC-AUC ${artifact.ensemble.metrics.rocAuc}.`);
+for (const model of artifact.models) console.log(`${model.name}: threshold ${model.threshold}, accuracy ${model.metrics.accuracy}%, recall ${model.metrics.recall}%, false positives ${model.metrics.falsePositiveRate}%, ROC-AUC ${model.metrics.rocAuc}.`);
+console.log(`Ensemble: threshold ${artifact.ensemble.threshold}, accuracy ${artifact.ensemble.metrics.accuracy}%, recall ${artifact.ensemble.metrics.recall}%, false positives ${artifact.ensemble.metrics.falsePositiveRate}%, ROC-AUC ${artifact.ensemble.metrics.rocAuc}.`);
 console.log(`Artifact: ${artifactPath}`);
