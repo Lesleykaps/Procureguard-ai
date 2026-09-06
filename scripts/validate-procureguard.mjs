@@ -39,6 +39,26 @@ async function checkApiFlow() {
   assert(session.response.ok && session.body?.user?.role, `Authenticated session check failed with ${session.response.status}.`);
   const role = session.body.user.role;
 
+  let usersStatus = null;
+  if (role === 'Admin') {
+    const users = await request('/api/users', { headers });
+    assert(users.response.ok && users.body?.users?.length >= 1, `User directory request failed with ${users.response.status}.`);
+    const selfGuard = await request('/api/users', { method: 'PATCH', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ id: session.body.user.id, role: 'Auditor' }) });
+    assert(selfGuard.response.status === 400, `Self-demotion guard returned ${selfGuard.response.status}, expected 400.`);
+    const target = users.body.users.find((user) => user.id !== session.body.user.id);
+    if (target) {
+      const roleUpdate = await request('/api/users', { method: 'PATCH', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ id: target.id, role: 'Manager' }) });
+      assert(roleUpdate.response.ok && roleUpdate.body?.updated, `User role update failed with ${roleUpdate.response.status}.`);
+      const roleRestore = await request('/api/users', { method: 'PATCH', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ id: target.id, role: 'Auditor' }) });
+      assert(roleRestore.response.ok && roleRestore.body?.updated, `User role restore failed with ${roleRestore.response.status}.`);
+    }
+    usersStatus = users.response.status;
+  } else {
+    const restrictedUsers = await request('/api/users', { headers });
+    assert(restrictedUsers.response.status === 403, `Restricted user management request returned ${restrictedUsers.response.status}, expected 403.`);
+    usersStatus = restrictedUsers.response.status;
+  }
+
   const transactions = await request('/api/transactions', { headers });
   assert(transactions.response.ok && Array.isArray(transactions.body?.transactions), `Transaction read failed with ${transactions.response.status}.`);
   assert(transactions.body.transactions.length > 0, 'Transaction read returned no seeded records.');
@@ -83,7 +103,7 @@ async function checkApiFlow() {
   const audit = await request('/api/audit', { headers });
   assert(audit.response.ok && Array.isArray(audit.body?.events) && audit.body.events.some((event) => event.event_type === 'import' && event.actor_id), `Audit trail did not record the authenticated write actions.`);
 
-  return { role, transactions: transactions.body.transactions.length, scanned: scan.body.scanned, scanDurationMs: scan.body.durationMs, imported: imported.body.imported, reportStatus: reportResponse.status, explanationStatus: explanation.response.status, modelsStatus: models.response.status, monitoringStatus: monitoring.response.status, auditEvents: audit.body.events.length };
+  return { role, transactions: transactions.body.transactions.length, scanned: scan.body.scanned, scanDurationMs: scan.body.durationMs, imported: imported.body.imported, reportStatus: reportResponse.status, explanationStatus: explanation.response.status, modelsStatus: models.response.status, monitoringStatus: monitoring.response.status, usersStatus, auditEvents: audit.body.events.length };
 }
 
 const artifactResult = checkArtifact();

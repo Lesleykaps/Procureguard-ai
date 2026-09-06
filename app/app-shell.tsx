@@ -37,9 +37,10 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 
 type Role = 'Admin' | 'Auditor' | 'Procurement Officer' | 'Manager';
-type View = 'dashboard' | 'transactions' | 'alerts' | 'explain' | 'models' | 'audit' | 'reports';
+type View = 'dashboard' | 'transactions' | 'alerts' | 'explain' | 'models' | 'audit' | 'reports' | 'users';
 type Risk = 'High' | 'Medium' | 'Low';
 type Txn = {
   id: string;
@@ -61,6 +62,7 @@ const navItems: { key: View; label: string; icon: typeof LayoutDashboard }[] = [
   { key: 'models', label: 'Models', icon: BarChart3 },
   { key: 'audit', label: 'Audit Trail', icon: Activity },
   { key: 'reports', label: 'Reports', icon: FileBarChart },
+  { key: 'users', label: 'User Management', icon: Users },
 ];
 
 const seedTransactions: Txn[] = [
@@ -271,6 +273,7 @@ export function AppShell({ authenticatedUser, signOutPath }: { authenticatedUser
         {view === 'models' && <ModelsView role={role} can={can} notify={notify} />}
         {view === 'audit' && <AuditView events={liveAudit} />}
         {view === 'reports' && <ReportsView transactions={transactions} detectionLatency={detectionLatency} reportReady={reportReady} setReportReady={setReportReady} notify={notify} />}
+        {view === 'users' && <UsersView notify={notify} />}
       </main>
     </div>
     <input ref={fileRef} type="file" accept=".csv,text/csv" className="hidden" onChange={handleUpload} />
@@ -366,4 +369,26 @@ function ReportsView({ transactions, detectionLatency, reportReady, setReportRea
   }
   const highestRisk = transactions.length ? Math.max(...transactions.map((item) => item.risk)) : 0;
   return <><SectionHeader eyebrow="Exportable evidence" title="Evidence reports" subtitle="Generate a structured fraud-intelligence report for procurement managers, auditors, and compliance teams." action={<Button onClick={downloadReport} className="bg-[#0dd3da] text-[#03202a] hover:bg-[#5be8e5]"><FileBarChart size={14} /> Export CSV</Button>} /><div className="report-layout mt-7"><section className="section-card report-card"><p className="eyebrow">Fraud intelligence report</p><h2 className="mt-2 text-lg font-semibold">Select report evidence</h2><p className="mt-2 text-xs leading-relaxed text-[#92aeb9]">The export includes the current transaction register, risk explanations, statuses, source files, and latest scan summary.</p>{['Executive summary', 'High-risk cases', 'Model performance', 'Audit trail evidence'].map((label) => <label className="check-row" key={label}><input type="checkbox" defaultChecked className="accent-[#15d9d0]" /> {label}</label>)}<Button onClick={downloadReport} className="mt-6 w-full bg-[#0dd3da] text-[#03202a] hover:bg-[#5be8e5]"><FileCheck2 size={14} /> {reportReady ? 'Download latest report' : 'Prepare and download'}</Button></section><section className="section-card report-card"><div className="flex items-center gap-3"><div className="logo-mark"><FileBarChart size={17} /></div><div><h2 className="text-sm font-semibold">Daily intelligence summary</h2><p className="tiny muted mt-1">Live report data · {reportReady ? 'Exported' : 'Not exported'}</p></div></div><div className="mt-7 space-y-5"><div><span className="tiny muted">Records included</span><div className="mt-1 text-2xl font-bold">{transactions.length}</div></div><div><span className="tiny muted">Highest risk</span><div className="mt-1 text-2xl font-bold text-[#ff5d7c]">{highestRisk}%</div></div><div><span className="tiny muted">Latest scan latency</span><div className="mt-1 text-2xl font-bold text-[#26ddd0]">{detectionLatency}</div></div></div></section></div><p className="tiny muted mt-4"><LockKeyhole className="mr-1 inline" size={12} /> Report exports are permission-controlled and each download is recorded in the audit trail.</p></>;
+}
+
+function UsersView({ notify }: { notify: (message: string) => void }) {
+  const [users, setUsers] = useState<{ id: string; email: string; display_name: string; role: Role; created_at: string }[]>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let active = true;
+    void fetch('/api/users', { cache: 'no-store' }).then(async (response) => {
+      const payload = await response.json() as { users?: { id: string; email: string; display_name: string; role: Role; created_at: string }[]; error?: string };
+      if (!response.ok) throw new Error(payload.error ?? 'User directory unavailable.');
+      if (active) setUsers(payload.users ?? []);
+    }).catch((error) => notify(error instanceof Error ? error.message : 'User directory unavailable.')).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [notify]);
+  async function updateRole(id: string, role: Role) {
+    const response = await fetch('/api/users', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, role }) });
+    const payload = await response.json() as { updated?: boolean; error?: string };
+    if (!response.ok) { notify(payload.error ?? 'Unable to update user access.'); return; }
+    setUsers((items) => items.map((user) => user.id === id ? { ...user, role } : user));
+    notify('User role updated and recorded in the audit trail.');
+  }
+  return <><SectionHeader eyebrow="Access governance" title="User management" subtitle="Assign least-privilege roles while preserving an accountable record of every access change." /><section className="section-card mt-7 table-wrap"><table className="data-table"><thead><tr><th>User</th><th>Email</th><th>Role</th><th>Added</th></tr></thead><tbody>{loading ? <tr><td colSpan={4}>Loading user directory…</td></tr> : users.map((user) => <tr key={user.id}><td><strong>{user.display_name}</strong><span className="cell-sub">{user.id}</span></td><td>{user.email}</td><td><NativeSelect value={user.role} onChange={(event) => void updateRole(user.id, event.target.value as Role)} aria-label={`Role for ${user.email}`}><NativeSelectOption value="Admin">Admin</NativeSelectOption><NativeSelectOption value="Auditor">Auditor</NativeSelectOption><NativeSelectOption value="Procurement Officer">Procurement Officer</NativeSelectOption><NativeSelectOption value="Manager">Manager</NativeSelectOption></NativeSelect></td><td>{new Date(user.created_at).toLocaleDateString('en', { year: 'numeric', month: 'short', day: 'numeric' })}</td></tr>)}</tbody></table></section><p className="tiny muted mt-4"><LockKeyhole className="mr-1 inline" size={12} /> Only Admins can change roles. Self-demotion and demotion of the last Admin are blocked.</p></>;
 }

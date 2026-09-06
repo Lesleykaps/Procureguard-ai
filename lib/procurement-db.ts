@@ -3,11 +3,11 @@ import trainedArtifact from '../ml/model-artifacts.json';
 
 export type RiskStatus = 'Open' | 'Reviewed' | 'Cleared';
 export type AppRole = 'Admin' | 'Auditor' | 'Procurement Officer' | 'Manager';
-export type AppPermission = 'transactions:read' | 'transactions:import' | 'transactions:review' | 'scan:run' | 'explain:read' | 'models:read' | 'audit:read' | 'reports:export';
+export type AppPermission = 'transactions:read' | 'transactions:import' | 'transactions:review' | 'scan:run' | 'explain:read' | 'models:read' | 'audit:read' | 'reports:export' | 'users:read' | 'users:manage';
 export type AuthenticatedActor = { userId: string; email: string; displayName: string; role: AppRole };
 
 const rolePermissions: Record<AppRole, AppPermission[]> = {
-  Admin: ['transactions:read', 'transactions:import', 'transactions:review', 'scan:run', 'explain:read', 'models:read', 'audit:read', 'reports:export'],
+  Admin: ['transactions:read', 'transactions:import', 'transactions:review', 'scan:run', 'explain:read', 'models:read', 'audit:read', 'reports:export', 'users:read', 'users:manage'],
   Auditor: ['transactions:read', 'transactions:review', 'scan:run', 'explain:read', 'audit:read', 'reports:export'],
   'Procurement Officer': ['transactions:read', 'transactions:import', 'reports:export'],
   Manager: ['transactions:read', 'transactions:review', 'scan:run', 'explain:read', 'models:read', 'audit:read', 'reports:export'],
