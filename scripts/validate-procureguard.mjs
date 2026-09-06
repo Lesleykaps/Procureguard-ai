@@ -70,6 +70,9 @@ async function checkApiFlow() {
   assert(monitoring.response.ok && monitoring.body?.monitoring?.latestScan, `Operational monitoring request failed with ${monitoring.response.status}.`);
   assert(monitoring.body.monitoring.latestScan.records_scanned === scan.body.scanned, 'Monitoring telemetry does not match the completed scan.');
   assert(Number(monitoring.body.monitoring.latestScan.duration_ms) >= 0, 'Monitoring telemetry returned an invalid scan duration.');
+  assert(Number(monitoring.body.monitoring.latestScan.high_risk_count) + Number(monitoring.body.monitoring.latestScan.medium_risk_count) + Number(monitoring.body.monitoring.latestScan.low_risk_count) === scan.body.scanned, 'Monitoring score bands do not reconcile to the completed scan.');
+  assert(monitoring.body.monitoring.dataQuality?.featureCompleteness !== null, 'Monitoring data-quality summary is missing feature completeness.');
+  assert(['within_reference', 'review_required'].includes(monitoring.body.monitoring.scoreDistribution?.status), 'Monitoring drift status is invalid.');
   assert(Number(monitoring.body.monitoring.transactionTotals?.total) >= transactions.body.transactions.length, 'Monitoring totals returned fewer transactions than the transaction API.');
 
   const reviewTarget = transactions.body.transactions[0].id;
@@ -122,7 +125,7 @@ async function checkApiFlow() {
   const audit = await request('/api/audit', { headers });
   assert(audit.response.ok && Array.isArray(audit.body?.events) && audit.body.events.some((event) => event.event_type === 'import' && event.actor_id), `Audit trail did not record the authenticated write actions.`);
 
-  return { role, transactions: transactions.body.transactions.length, scanned: scan.body.scanned, scanDurationMs: scan.body.durationMs, imported: imported.body.imported, reportStatus: reportResponse.status, explanationStatus: explanation.response.status, reviewStatus: reviewDecision.response.status, evaluationStatus: evaluation.response.status, modelsStatus: models.response.status, monitoringStatus: monitoring.response.status, usersStatus, auditEvents: audit.body.events.length };
+  return { role, transactions: transactions.body.transactions.length, scanned: scan.body.scanned, scanDurationMs: scan.body.durationMs, imported: imported.body.imported, reportStatus: reportResponse.status, explanationStatus: explanation.response.status, reviewStatus: reviewDecision.response.status, evaluationStatus: evaluation.response.status, modelsStatus: models.response.status, monitoringStatus: monitoring.response.status, driftStatus: monitoring.body.monitoring.scoreDistribution.status, usersStatus, auditEvents: audit.body.events.length };
 }
 
 const artifactResult = checkArtifact();
