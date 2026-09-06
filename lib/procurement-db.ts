@@ -273,18 +273,52 @@ export async function addAuditEvent(actorId: string, eventType: string, message:
     .bind(`AUD-${crypto.randomUUID()}`, actorId, eventType, message, entityId, new Date().toISOString()).run();
 }
 
+function parseCsvLine(line: string) {
+  const values: string[] = [];
+  let value = '';
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (character === '"') {
+      if (quoted && line[index + 1] === '"') { value += '"'; index += 1; }
+      else quoted = !quoted;
+    } else if (character === ',' && !quoted) {
+      values.push(value.trim());
+      value = '';
+    } else value += character;
+  }
+  values.push(value.trim());
+  return values;
+}
+
 export function parseCsv(text: string) {
   const rows = text.replace(/^\uFEFF/, '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   if (rows.length < 2) throw new Error('CSV must include a header and at least one record.');
-  const headers = rows.shift()!.split(',').map((header) => header.trim().toLowerCase());
-  const required = ['id', 'supplier', 'amount', 'pattern'];
-  if (required.some((header) => !headers.includes(header))) throw new Error('CSV headers must include id, supplier, amount, and pattern.');
-  return rows.map((line, index) => {
-    const values = line.split(',').map((value) => value.trim().replace(/^"|"$/g, ''));
+  const headers = parseCsvLine(rows.shift()!).map((header) => header.toLowerCase().replace(/\s+/g, '_'));
+  const aliases = {
+    id: ['id', 'transaction_id', 'po_id', 'invoice_id'],
+    supplier: ['supplier', 'supplier_name', 'vendor', 'vendor_name'],
+    amount: ['amount', 'amount_usd', 'value', 'amount_local'],
+    pattern: ['pattern', 'risk_pattern', 'anomaly_type', 'fraud_type'],
+  } as const;
+  const column = (names: readonly string[]) => names.find((name) => headers.includes(name));
+  const idColumn = column(aliases.id);
+  const supplierColumn = column(aliases.supplier);
+  const amountColumn = column(aliases.amount);
+  const patternColumn = column(aliases.pattern);
+  if (!idColumn || !supplierColumn || !amountColumn) throw new Error('CSV headers must include an id (or transaction_id), supplier (or supplier_name), and amount (or amount_usd) column.');
+  const errors: string[] = [];
+  const records = rows.map((line, index) => {
+    const values = parseCsvLine(line);
     const record = Object.fromEntries(headers.map((header, valueIndex) => [header, values[valueIndex] ?? '']));
-    const amount = Number(record.amount);
-    if (!record.id || !record.supplier || !Number.isFinite(amount)) throw new Error(`Row ${index + 2} has an invalid id, supplier, or amount.`);
-    const pattern = record.pattern || 'Unclassified purchase';
-    return { id: record.id, supplier: record.supplier, amount, pattern, modelFeatures: modelFeatures(pattern, amount, record) };
+    const id = record[idColumn]?.trim() ?? '';
+    const supplier = record[supplierColumn]?.trim() ?? '';
+    const amount = Number((record[amountColumn] ?? '').replace(/[$,\s]/g, ''));
+    const pattern = patternColumn ? record[patternColumn]?.trim() || 'Unclassified purchase' : 'Unclassified purchase';
+    if (!id || !supplier || !Number.isFinite(amount) || amount < 0) errors.push(`Row ${index + 2} has an invalid id, supplier, or non-negative amount.`);
+    if (id.length > 120 || supplier.length > 200 || pattern.length > 120) errors.push(`Row ${index + 2} exceeds the supported field length.`);
+    return { id, supplier, amount, pattern, modelFeatures: modelFeatures(pattern, amount, record) };
   });
+  if (errors.length) throw new Error(`CSV validation failed: ${errors.slice(0, 5).join(' ')}${errors.length > 5 ? ` ${errors.length - 5} more row errors.` : ''}`);
+  return records;
 }

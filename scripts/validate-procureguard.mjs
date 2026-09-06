@@ -81,9 +81,12 @@ async function checkApiFlow() {
 
   const importId = `VERIFY-${Date.now()}`;
   const form = new FormData();
-  form.set('file', new File([`id,supplier,amount,pattern\n${importId},Validation Supplier,12500,Normal purchase\n`], 'verification.csv', { type: 'text/csv' }));
+  form.set('file', new File([`transaction_id,supplier_name,amount_usd,pattern\n${importId},"Validation, Supplier","$12,500",Normal purchase\n${importId},Validation Supplier,12500,Normal purchase\n`], 'verification.csv', { type: 'text/csv' }));
   const imported = await request('/api/transactions/import', { method: 'POST', headers, body: form });
-  assert(imported.response.ok && imported.body?.imported === 1, `CSV import failed with ${imported.response.status}.`);
+  assert(imported.response.ok && imported.body?.imported === 1 && imported.body?.duplicates === 1, `CSV import failed with ${imported.response.status}.`);
+  const templateResponse = await fetch(`${baseUrl}/api/transactions/template`, { headers });
+  const templateText = await templateResponse.text();
+  assert(templateResponse.ok && templateResponse.headers.get('content-type')?.includes('text/csv') && templateText.includes('contract_amount_usd'), `Import template request failed with ${templateResponse.status}.`);
 
   const reportResponse = await fetch(`${baseUrl}/api/reports?format=csv`, { headers });
   const reportText = await reportResponse.text();

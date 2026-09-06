@@ -233,18 +233,37 @@ export function AppShell({ authenticatedUser, signOutPath }: { authenticatedUser
     form.append('file', file);
     try {
       const response = await fetch('/api/transactions/import', { method: 'POST', body: form });
-      const payload = await response.json() as { imported?: number; error?: string };
+      const payload = await response.json() as { imported?: number; duplicates?: number; rejected?: number; error?: string };
       if (!response.ok) throw new Error(payload.error ?? 'Import failed');
       const refreshed = await fetch('/api/transactions', { cache: 'no-store' });
       const refreshedPayload = await refreshed.json() as { transactions?: Txn[] };
       if (refreshed.ok && refreshedPayload.transactions?.length) setTransactions(refreshedPayload.transactions);
       setLiveAudit((events) => [[`${payload.imported ?? 0} procurement records imported from ${file.name}.`, userName, new Date().toLocaleString('en', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' })], ...events]);
-      notify(`${payload.imported ?? 0} records imported and scored.`);
+      notify(`${payload.imported ?? 0} records imported and scored; ${payload.duplicates ?? 0} duplicates skipped.`);
     } catch (error) {
       notify(error instanceof Error ? error.message : 'Unable to import this CSV.');
     }
     setView('transactions');
     event.target.value = '';
+  }
+
+  async function downloadImportTemplate() {
+    try {
+      const response = await fetch('/api/transactions/template', { cache: 'no-store' });
+      if (!response.ok) throw new Error('Import template unavailable.');
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = 'procureguard-import-template.csv';
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      notify('Import template downloaded.');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Import template unavailable.');
+    }
   }
 
   const can = (module: string) => roleCopy[role].allowed.includes(module);
@@ -270,7 +289,7 @@ export function AppShell({ authenticatedUser, signOutPath }: { authenticatedUser
       <main className="content">
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2"><span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#0f3447] text-[#23ddd2]"><UserRound size={14} /></span><span className="text-xs text-[#a1bbc3]">Signed in as <strong className="text-[#e7f5f7]">{userName}</strong></span><Badge variant="outline" className="border-[#1a827f] text-[#2ee0d4]">{role}</Badge></div><a href={signOutPath} className="tiny muted hover:text-[#2ee0d4]">Sign out</a></div>
         {view === 'dashboard' && <Dashboard transactions={transactions} modelAccuracy={modelAccuracy} modelFalsePositiveRate={modelFalsePositiveRate} detectionLatency={detectionLatency} monitoringSummary={monitoringSummary} setView={setView} setSelectedId={setSelectedId} runScan={runScan} canScan={canScan} />}
-        {view === 'transactions' && <TransactionsView transactions={visibleTransactions} onUpload={() => fileRef.current?.click()} updateStatus={updateStatus} setSelectedId={(id) => { setSelectedId(id); setView('explain'); }} canImport={canImport} />}
+        {view === 'transactions' && <TransactionsView transactions={visibleTransactions} onUpload={() => fileRef.current?.click()} onDownloadTemplate={downloadImportTemplate} updateStatus={updateStatus} setSelectedId={(id) => { setSelectedId(id); setView('explain'); }} canImport={canImport} />}
         {view === 'alerts' && <AlertsView alerts={visibleAlerts} filter={alertFilter} setFilter={setAlertFilter} setSelectedId={(id) => { setSelectedId(id); setView('explain'); }} updateStatus={updateStatus} canReview={canReview} />}
         {view === 'explain' && <ExplainView key={selected.id} selected={selected} setView={setView} notify={notify} />}
         {view === 'models' && <ModelsView role={role} can={can} notify={notify} />}
@@ -295,8 +314,8 @@ function Dashboard({ transactions, modelAccuracy, modelFalsePositiveRate, detect
   </>;
 }
 
-function TransactionsView({ transactions, onUpload, updateStatus: _updateStatus, setSelectedId, canImport }: { transactions: Txn[]; onUpload: () => void; updateStatus: (id: string, status: Txn['status']) => void; setSelectedId: (id: string) => void; canImport: boolean }) {
-  return <><SectionHeader eyebrow="Real-time monitoring" title="Live transaction monitor" subtitle="Every procurement record is screened against anomaly patterns before it reaches the next approval step." action={<Button onClick={onUpload} disabled={!canImport} variant="outline" className="border-[rgba(24,216,207,.4)] text-[#28ded4]"><Upload size={14} /> {canImport ? 'Import CSV' : 'Import restricted'}</Button>} /><div className="toolbar"><div className="filter-row"><button className="filter-button active">All transactions</button><button className="filter-button">Open cases</button><button className="filter-button">Cleared</button></div><div className="flex items-center gap-2 text-[11px] muted"><Database size={14} /> {transactions.length} records in view <Filter size={14} /></div></div><section className="section-card table-wrap"><table className="data-table"><thead><tr><th>PO / Invoice</th><th>Supplier</th><th>Amount</th><th>Pattern</th><th>Risk</th><th>Status</th><th aria-label="Actions" /></tr></thead><tbody>{transactions.map((item) => <tr key={item.id}><td><button className="text-left font-semibold text-[#ecfbfc] hover:text-[#20ddd3]" onClick={() => setSelectedId(item.id)}>{item.id}</button><span className="cell-sub">{item.date}</span></td><td>{item.supplier}</td><td className="mono">{item.amount}</td><td>{item.pattern}</td><td><RiskBadge score={item.risk} /></td><td><span className={`status ${item.status.toLowerCase()}`}>{item.status}</span></td><td><button aria-label={`Review ${item.id}`} className="action-link" onClick={() => setSelectedId(item.id)}><MoreHorizontal size={16} /></button></td></tr>)}</tbody></table></section><p className="tiny muted mt-4"><Info className="mr-1 inline" size={12} /> Imported records are scored in the prototype using the configured risk model snapshot.</p></>;
+function TransactionsView({ transactions, onUpload, onDownloadTemplate, updateStatus: _updateStatus, setSelectedId, canImport }: { transactions: Txn[]; onUpload: () => void; onDownloadTemplate: () => void; updateStatus: (id: string, status: Txn['status']) => void; setSelectedId: (id: string) => void; canImport: boolean }) {
+  return <><SectionHeader eyebrow="Real-time monitoring" title="Live transaction monitor" subtitle="Every procurement record is screened against anomaly patterns before it reaches the next approval step." action={<div className="flex flex-wrap gap-2"><Button onClick={onDownloadTemplate} disabled={!canImport} variant="outline" className="border-[rgba(111,166,188,.24)] text-[#b3cbd1]"><Download size={14} /> Template</Button><Button onClick={onUpload} disabled={!canImport} variant="outline" className="border-[rgba(24,216,207,.4)] text-[#28ded4]"><Upload size={14} /> {canImport ? 'Import CSV' : 'Import restricted'}</Button></div>} /><div className="toolbar"><div className="filter-row"><button className="filter-button active">All transactions</button><button className="filter-button">Open cases</button><button className="filter-button">Cleared</button></div><div className="flex items-center gap-2 text-[11px] muted"><Database size={14} /> {transactions.length} records in view <Filter size={14} /></div></div><section className="section-card table-wrap"><table className="data-table"><thead><tr><th>PO / Invoice</th><th>Supplier</th><th>Amount</th><th>Pattern</th><th>Risk</th><th>Status</th><th aria-label="Actions" /></tr></thead><tbody>{transactions.map((item) => <tr key={item.id}><td><button className="text-left font-semibold text-[#ecfbfc] hover:text-[#20ddd3]" onClick={() => setSelectedId(item.id)}>{item.id}</button><span className="cell-sub">{item.date}</span></td><td>{item.supplier}</td><td className="mono">{item.amount}</td><td>{item.pattern}</td><td><RiskBadge score={item.risk} /></td><td><span className={`status ${item.status.toLowerCase()}`}>{item.status}</span></td><td><button aria-label={`Review ${item.id}`} className="action-link" onClick={() => setSelectedId(item.id)}><MoreHorizontal size={16} /></button></td></tr>)}</tbody></table></section><p className="tiny muted mt-4"><Info className="mr-1 inline" size={12} /> Accepted files may use common aliases such as transaction_id, supplier_name, and amount_usd. Existing transaction ids are skipped safely.</p></>;
 }
 
 function AlertsView({ alerts, filter, setFilter, setSelectedId, updateStatus, canReview }: { alerts: Txn[]; filter: 'All' | Risk | 'Open' | 'Reviewed'; setFilter: (filter: 'All' | Risk | 'Open' | 'Reviewed') => void; setSelectedId: (id: string) => void; updateStatus: (id: string, status: Txn['status']) => void; canReview: boolean }) {
