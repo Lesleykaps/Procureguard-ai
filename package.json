@@ -13,7 +13,8 @@
     "format": "oxfmt",
     "db:generate": "drizzle-kit generate",
     "data:generate": "node ml/generate_synthetic_dataset.mjs",
-    "models:train": "node ml/train_models.mjs"
+    "models:train": "node ml/train_models.mjs",
+    "test:validation": "node scripts/validate-procureguard.mjs"
   },
   "dependencies": {
     "react": "19.2.6",

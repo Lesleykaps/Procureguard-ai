@@ -1,0 +1,86 @@
+import { readFile } from 'node:fs/promises';
+
+const baseUrl = process.env.PROCUREGUARD_BASE_URL ?? 'http://127.0.0.1:5173';
+const artifact = JSON.parse(await readFile(new URL('../ml/model-artifacts.json', import.meta.url), 'utf8'));
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+function checkArtifact() {
+  assert(artifact.features.length === 12, 'Artifact must define the 12 deployed features.');
+  assert(Math.abs(Object.values(artifact.ensemble.weights).reduce((sum, value) => sum + value, 0) - 1) < 0.0001, 'Ensemble weights must sum to one.');
+  assert(artifact.ensemble.threshold > 0 && artifact.ensemble.threshold < 1, 'Ensemble threshold must be between zero and one.');
+  const gradientBoosted = artifact.models.find((model) => model.runtime === 'gradient_boosted_trees');
+  const randomForest = artifact.models.find((model) => model.runtime === 'random_forest');
+  const logistic = artifact.models.find((model) => model.runtime === 'logistic_regression');
+  assert(gradientBoosted?.parameters?.trees?.length === 32, 'Gradient-boosted artifact parameters are incomplete.');
+  assert(randomForest?.parameters?.trees?.length === 24, 'Random-forest artifact parameters are incomplete.');
+  assert(logistic?.parameters?.weights?.length === 12, 'Logistic-regression coefficients are incomplete.');
+  assert(artifact.explanation.method === 'exact_shapley_enumeration' && artifact.explanation.featureCount === 12, 'Explanation metadata is out of sync with the deployed feature vector.');
+  return { features: artifact.features.length, ensembleThreshold: artifact.ensemble.threshold, models: artifact.models.length };
+}
+
+async function request(path, options = {}) {
+  const response = await fetch(`${baseUrl}${path}`, options);
+  let body = null;
+  try { body = await response.json(); } catch { /* HTML error responses are reported by status below. */ }
+  return { response, body };
+}
+
+async function checkApiFlow() {
+  const unauthenticated = await request('/api/session');
+  assert(unauthenticated.response.status === 401, `Unauthenticated session check returned ${unauthenticated.response.status}, expected 401.`);
+
+  const identity = `verification-${Date.now()}`;
+  const headers = { 'oai-authenticated-user-id': identity, 'oai-authenticated-user-email': `${identity}@example.test` };
+  if (process.env.PROCUREGUARD_AUTH_COOKIE) headers.cookie = process.env.PROCUREGUARD_AUTH_COOKIE;
+  const session = await request('/api/session', { headers });
+  assert(session.response.ok && session.body?.user?.role, `Authenticated session check failed with ${session.response.status}.`);
+  const role = session.body.user.role;
+
+  const transactions = await request('/api/transactions', { headers });
+  assert(transactions.response.ok && Array.isArray(transactions.body?.transactions), `Transaction read failed with ${transactions.response.status}.`);
+  assert(transactions.body.transactions.length > 0, 'Transaction read returned no seeded records.');
+
+  const scan = await request('/api/scan', { method: 'POST', headers });
+  assert(scan.response.ok && scan.body?.scanned >= transactions.body.transactions.length, `Scan request failed with ${scan.response.status}.`);
+
+  const reviewTarget = transactions.body.transactions[0].id;
+  const review = await request('/api/transactions', { method: 'PATCH', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ id: reviewTarget, status: 'Reviewed' }) });
+  assert(review.response.ok && review.body?.updated, `Review update failed with ${review.response.status}.`);
+
+  const importId = `VERIFY-${Date.now()}`;
+  const form = new FormData();
+  form.set('file', new File([`id,supplier,amount,pattern\n${importId},Validation Supplier,12500,Normal purchase\n`], 'verification.csv', { type: 'text/csv' }));
+  const imported = await request('/api/transactions/import', { method: 'POST', headers, body: form });
+  assert(imported.response.ok && imported.body?.imported === 1, `CSV import failed with ${imported.response.status}.`);
+
+  const explanation = await request('/api/explain?id=PO-10488', { headers });
+  if (role === 'Admin' || role === 'Auditor' || role === 'Manager') {
+    assert(explanation.response.ok, `Explanation request failed with ${explanation.response.status}.`);
+    assert(explanation.body?.explanation?.contributions?.length === 12, 'Explanation did not return all 12 feature contributions.');
+    assert(explanation.body.explanation.explanationMethod === 'exact_shapley_enumeration', 'Explanation method is not exact Shapley enumeration.');
+  } else {
+    assert(explanation.response.status === 403, `Restricted explanation request returned ${explanation.response.status}, expected 403.`);
+  }
+
+  const models = await request('/api/models', { headers });
+  if (role === 'Admin' || role === 'Manager') assert(models.response.ok && models.body?.models?.length === 3, `Model registry request failed with ${models.response.status}.`);
+  else assert(models.response.status === 403, `Restricted model registry request returned ${models.response.status}, expected 403.`);
+
+  const audit = await request('/api/audit', { headers });
+  assert(audit.response.ok && Array.isArray(audit.body?.events) && audit.body.events.some((event) => event.event_type === 'import' && event.actor_id), `Audit trail did not record the authenticated write actions.`);
+
+  return { role, transactions: transactions.body.transactions.length, scanned: scan.body.scanned, imported: imported.body.imported, explanationStatus: explanation.response.status, modelsStatus: models.response.status, auditEvents: audit.body.events.length };
+}
+
+const artifactResult = checkArtifact();
+let apiResult;
+try {
+  apiResult = await checkApiFlow();
+} catch (error) {
+  console.error(`API validation failed against ${baseUrl}: ${error instanceof Error ? error.message : String(error)}`);
+  process.exitCode = 1;
+}
+if (apiResult) console.log(JSON.stringify({ ok: true, artifact: artifactResult, api: apiResult }));
