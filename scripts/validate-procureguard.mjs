@@ -121,6 +121,11 @@ async function checkApiFlow() {
     assert(evaluation.response.status === 403, `Restricted model evaluation request returned ${evaluation.response.status}, expected 403.`);
   }
 
+  const reviewQueue = await request('/api/reviews/queue', { headers });
+  assert(reviewQueue.response.ok && reviewQueue.body?.coverage && Array.isArray(reviewQueue.body?.queue), `Review queue request failed with ${reviewQueue.response.status}.`);
+  assert(Number(reviewQueue.body.coverage.labelled) + Number(reviewQueue.body.coverage.unreviewed) + Number(reviewQueue.body.coverage.needsEvidence) === Number(reviewQueue.body.coverage.total), 'Review queue coverage does not reconcile to the transaction total.');
+  assert(reviewQueue.body.coverage.remainingToTarget >= 0 && reviewQueue.body.coverage.remainingToTarget <= 30, 'Review queue target coverage is invalid.');
+
   const calibration = await request('/api/calibration', { headers });
   if (role === 'Admin' || role === 'Manager') {
     assert(calibration.response.ok && calibration.body?.calibration?.sampleCount >= 2 && calibration.body.calibration.proposedThreshold !== null, `Calibration proposal request failed with ${calibration.response.status}.`);
@@ -138,7 +143,7 @@ async function checkApiFlow() {
   const audit = await request('/api/audit', { headers });
   assert(audit.response.ok && Array.isArray(audit.body?.events) && audit.body.events.some((event) => event.event_type === 'import' && event.actor_id), `Audit trail did not record the authenticated write actions.`);
 
-  return { role, transactions: transactions.body.transactions.length, scanned: scan.body.scanned, scanDurationMs: scan.body.durationMs, imported: imported.body.imported, reportStatus: reportResponse.status, explanationStatus: explanation.response.status, reviewStatus: reviewDecision.response.status, evaluationStatus: evaluation.response.status, calibrationStatus: calibration.response.status, modelsStatus: models.response.status, monitoringStatus: monitoring.response.status, driftStatus: monitoring.body.monitoring.scoreDistribution.status, usersStatus, auditEvents: audit.body.events.length };
+  return { role, transactions: transactions.body.transactions.length, scanned: scan.body.scanned, scanDurationMs: scan.body.durationMs, imported: imported.body.imported, reportStatus: reportResponse.status, explanationStatus: explanation.response.status, reviewStatus: reviewDecision.response.status, evaluationStatus: evaluation.response.status, calibrationStatus: calibration.response.status, modelsStatus: models.response.status, monitoringStatus: monitoring.response.status, reviewQueueStatus: reviewQueue.response.status, driftStatus: monitoring.body.monitoring.scoreDistribution.status, usersStatus, auditEvents: audit.body.events.length };
 }
 
 const artifactResult = checkArtifact();

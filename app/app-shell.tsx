@@ -106,6 +106,33 @@ type EvaluationSummary = {
     falsePositiveRate: number | null;
   };
 };
+type ReviewQueueSummary = {
+  queue: {
+    id: string;
+    supplier: string;
+    amount: number;
+    pattern: string;
+    risk: number;
+    status: Txn['status'];
+    reason: string;
+    createdAt: string;
+    reviewState: 'unreviewed' | 'needs_evidence';
+    priority: 'high' | 'medium' | 'low';
+  }[];
+  coverage: {
+    total: number;
+    labelled: number;
+    confirmedFraud: number;
+    falsePositive: number;
+    needsEvidence: number;
+    unreviewed: number;
+    highRiskUnreviewed: number;
+    percentage: number;
+    targetCases: number;
+    remainingToTarget: number;
+    readyForTraining: boolean;
+  };
+};
 type CalibrationSummary = {
   sampleCount: number;
   currentThreshold: number;
@@ -392,6 +419,8 @@ export function AppShell({
   const [detectionLatency, setDetectionLatency] = useState('—');
   const [monitoringSummary, setMonitoringSummary] =
     useState<MonitoringSummary | null>(null);
+  const [reviewQueue, setReviewQueue] =
+    useState<ReviewQueueSummary | null>(null);
   const [liveAudit, setLiveAudit] = useState(auditEvents as string[][]);
   const fileRef = useRef<HTMLInputElement>(null);
   const selected =
@@ -429,12 +458,14 @@ export function AppShell({
           modelsResponse,
           sessionResponse,
           monitoringResponse,
+          reviewQueueResponse,
         ] = await Promise.all([
           fetch('/api/transactions', { cache: 'no-store' }),
           fetch('/api/audit', { cache: 'no-store' }),
           fetch('/api/models', { cache: 'no-store' }),
           fetch('/api/session', { cache: 'no-store' }),
           fetch('/api/monitoring', { cache: 'no-store' }),
+          fetch('/api/reviews/queue', { cache: 'no-store' }),
         ]);
         const transactionPayload = (await transactionsResponse.json()) as {
           transactions?: Txn[];
@@ -527,6 +558,20 @@ export function AppShell({
               null,
           });
         }
+        const reviewQueuePayload = (await reviewQueueResponse.json()) as {
+          queue?: ReviewQueueSummary['queue'];
+          coverage?: ReviewQueueSummary['coverage'];
+        };
+        if (
+          active &&
+          reviewQueueResponse.ok &&
+          reviewQueuePayload.queue &&
+          reviewQueuePayload.coverage
+        )
+          setReviewQueue({
+            queue: reviewQueuePayload.queue,
+            coverage: reviewQueuePayload.coverage,
+          });
       } catch {
         // The seeded client view remains usable while the local or hosted data service is unavailable.
       }
@@ -853,6 +898,7 @@ export function AppShell({
               modelFalsePositiveRate={modelFalsePositiveRate}
               detectionLatency={detectionLatency}
               monitoringSummary={monitoringSummary}
+              reviewQueue={reviewQueue}
               setView={setView}
               setSelectedId={setSelectedId}
               runScan={runScan}
@@ -932,6 +978,7 @@ function Dashboard({
   modelFalsePositiveRate,
   detectionLatency,
   monitoringSummary,
+  reviewQueue,
   setView,
   setSelectedId,
   runScan,
@@ -942,6 +989,7 @@ function Dashboard({
   modelFalsePositiveRate: string;
   detectionLatency: string;
   monitoringSummary: MonitoringSummary | null;
+  reviewQueue: ReviewQueueSummary | null;
   setView: (view: View) => void;
   setSelectedId: (id: string) => void;
   runScan: () => void;
@@ -1058,6 +1106,62 @@ function Dashboard({
           )}
         </div>
       </section>
+      {reviewQueue && (
+        <section className="section-card mt-4 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="eyebrow">Reviewer work queue</p>
+              <h2 className="mt-1 text-sm font-semibold">
+                {reviewQueue.coverage.unreviewed + reviewQueue.coverage.needsEvidence}{' '}
+                cases need adjudication
+              </h2>
+              <p className="tiny muted mt-1">
+                {reviewQueue.coverage.labelled} of {reviewQueue.coverage.total}{' '}
+                records have a definitive label · {reviewQueue.coverage.remainingToTarget}{' '}
+                to the 30-case training target.
+              </p>
+            </div>
+            <button className="action-link" onClick={() => setView('alerts')}>
+              Open review queue <ArrowUpRight className="inline" size={13} />
+            </button>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <div className="rounded-lg border border-[rgba(111,166,188,.14)] bg-[#0a2134] p-3">
+              <span className="tiny muted">Label coverage</span>
+              <strong className="mt-1 block text-base text-[#2ee0d4]">{reviewQueue.coverage.percentage}%</strong>
+            </div>
+            <div className="rounded-lg border border-[rgba(111,166,188,.14)] bg-[#0a2134] p-3">
+              <span className="tiny muted">High-risk unreviewed</span>
+              <strong className="mt-1 block text-base text-[#ffc24a]">{reviewQueue.coverage.highRiskUnreviewed}</strong>
+            </div>
+            <div className="rounded-lg border border-[rgba(111,166,188,.14)] bg-[#0a2134] p-3">
+              <span className="tiny muted">Label balance</span>
+              <strong className="mt-1 block text-base text-[#e8fbfb]">{reviewQueue.coverage.confirmedFraud} fraud · {reviewQueue.coverage.falsePositive} clear</strong>
+            </div>
+          </div>
+          {reviewQueue.queue.length > 0 && (
+            <div className="mt-4 grid gap-2 md:grid-cols-3">
+              {reviewQueue.queue.slice(0, 3).map((item) => (
+                <button
+                  key={item.id}
+                  className="rounded-lg border border-[rgba(111,166,188,.14)] bg-[#0a2134] p-3 text-left hover:border-[rgba(24,216,207,.45)]"
+                  onClick={() => {
+                    setSelectedId(item.id);
+                    setView('explain');
+                  }}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="mono text-[11px] text-[#d8ebed]">{item.id}</span>
+                    <RiskBadge score={item.risk} />
+                  </div>
+                  <p className="mt-2 text-xs text-[#b7d0d5]">{item.supplier}</p>
+                  <p className="tiny muted mt-1">{item.reviewState === 'needs_evidence' ? 'Needs evidence' : 'Not yet reviewed'}</p>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
       <div className="dashboard-grid">
         <section className="section-card map-card">
           <div className="card-heading">
