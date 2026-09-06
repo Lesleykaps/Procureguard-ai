@@ -38,6 +38,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
+import { Textarea } from '@/components/ui/textarea';
 
 type Role = 'Admin' | 'Auditor' | 'Procurement Officer' | 'Manager';
 type View = 'dashboard' | 'transactions' | 'alerts' | 'explain' | 'models' | 'audit' | 'reports' | 'users';
@@ -53,6 +54,7 @@ type Txn = {
   date: string;
 };
 type MonitoringSummary = { recordsScanned: number; flaggedCount: number; meanRisk: number; maxRisk: number; durationMs: number; createdAt: string };
+type ReviewRecord = { id: string; transaction_id: string; actor_id: string; decision: 'confirmed_fraud' | 'false_positive' | 'needs_evidence'; note: string | null; created_at: string };
 
 const navItems: { key: View; label: string; icon: typeof LayoutDashboard }[] = [
   { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -269,7 +271,7 @@ export function AppShell({ authenticatedUser, signOutPath }: { authenticatedUser
         {view === 'dashboard' && <Dashboard transactions={transactions} modelAccuracy={modelAccuracy} modelFalsePositiveRate={modelFalsePositiveRate} detectionLatency={detectionLatency} monitoringSummary={monitoringSummary} setView={setView} setSelectedId={setSelectedId} runScan={runScan} canScan={canScan} />}
         {view === 'transactions' && <TransactionsView transactions={visibleTransactions} onUpload={() => fileRef.current?.click()} updateStatus={updateStatus} setSelectedId={(id) => { setSelectedId(id); setView('explain'); }} canImport={canImport} />}
         {view === 'alerts' && <AlertsView alerts={visibleAlerts} filter={alertFilter} setFilter={setAlertFilter} setSelectedId={(id) => { setSelectedId(id); setView('explain'); }} updateStatus={updateStatus} canReview={canReview} />}
-        {view === 'explain' && <ExplainView selected={selected} setView={setView} />}
+        {view === 'explain' && <ExplainView key={selected.id} selected={selected} setView={setView} notify={notify} />}
         {view === 'models' && <ModelsView role={role} can={can} notify={notify} />}
         {view === 'audit' && <AuditView events={liveAudit} />}
         {view === 'reports' && <ReportsView transactions={transactions} detectionLatency={detectionLatency} reportReady={reportReady} setReportReady={setReportReady} notify={notify} />}
@@ -301,9 +303,12 @@ function AlertsView({ alerts, filter, setFilter, setSelectedId, updateStatus, ca
   return <><SectionHeader eyebrow="Case management" title="Fraud alert queue" subtitle="Prioritize high-risk cases, inspect the evidence, and keep investigation status accountable." action={<Button onClick={() => alerts.forEach((item) => item.status === 'Open' && updateStatus(item.id, 'Reviewed'))} disabled={!canReview} className="h-9 bg-[#0dd3da] text-[#03202a] hover:bg-[#5be8e5]"><Check size={14} /> {canReview ? 'Mark open as reviewed' : 'Review restricted'}</Button>} /><div className="toolbar"><div className="filter-row">{filters.map((item) => <button key={item} className={`filter-button ${filter === item ? 'active' : ''}`} onClick={() => setFilter(item)}>{item}</button>)}</div><span className="tiny muted">{alerts.length} cases shown</span></div><div className="queue-grid">{alerts.map((item) => <section className="section-card queue-card" key={item.id}><div><div className="flex items-center justify-between"><RiskBadge score={item.risk} /><span className="tiny muted">{item.date}</span></div><h3>{item.id} · {item.supplier}</h3><p>{item.reason}</p></div><div className="flex items-center justify-between"><span className={`status ${item.status.toLowerCase()}`}>{item.status}</span><button className="action-link" onClick={() => { setSelectedId(item.id); }}>Investigate <ChevronRight className="inline" size={13} /></button></div></section>)}</div></>;
 }
 
-function ExplainView({ selected, setView }: { selected: Txn; setView: (view: View) => void }) {
+function ExplainView({ selected, setView, notify }: { selected: Txn; setView: (view: View) => void; notify: (message: string) => void }) {
   const [factors, setFactors] = useState<{ label: string; value: number; direction: string }[]>([]);
   const [explanationMeta, setExplanationMeta] = useState<{ baseRisk?: number; ensembleProbability?: number; decisionThreshold?: number }>({});
+  const [reviews, setReviews] = useState<ReviewRecord[]>([]);
+  const [reviewNote, setReviewNote] = useState('');
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
   useEffect(() => {
     let active = true;
     void fetch(`/api/explain?id=${encodeURIComponent(selected.id)}`, { cache: 'no-store' }).then(async (response) => {
@@ -315,8 +320,32 @@ function ExplainView({ selected, setView }: { selected: Txn; setView: (view: Vie
     }).catch(() => undefined);
     return () => { active = false; };
   }, [selected.id]);
+  useEffect(() => {
+    let active = true;
+    void fetch(`/api/reviews?id=${encodeURIComponent(selected.id)}`, { cache: 'no-store' }).then(async (response) => {
+      const payload = await response.json() as { reviews?: ReviewRecord[] };
+      if (active && response.ok) setReviews(payload.reviews ?? []);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [selected.id]);
+  async function recordReview(decision: ReviewRecord['decision']) {
+    setIsSubmittingReview(true);
+    try {
+      const response = await fetch('/api/reviews', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transactionId: selected.id, decision, note: reviewNote }) });
+      const payload = await response.json() as { review?: ReviewRecord; error?: string };
+      if (!response.ok || !payload.review) throw new Error(payload.error ?? 'Review decision could not be saved.');
+      setReviews((items) => [payload.review!, ...items]);
+      setReviewNote('');
+      notify('Review decision recorded for future model evaluation.');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Review decision could not be saved.');
+    } finally {
+      setIsSubmittingReview(false);
+    }
+  }
   const visibleFactors = factors.length ? factors : [['Invoice amount variance', 92], ['Single-bid frequency', 84], ['Supplier payment velocity', 76], ['Approval override count', 68], ['Contract price deviation', 61], ['Vendor relationship signal', 48]].map(([label, value]) => ({ label: String(label), value: Number(value), direction: 'risk' }));
-  return <><SectionHeader eyebrow="Responsible AI" title="Explainable AI" subtitle="Make every flagged transaction easier to challenge, validate, and act on with feature-level explanations." action={<Badge className="border border-[#1f7f7a] bg-[#0c3b40] text-[#43e5d5]"><Sparkles size={13} /> Exact SHAP</Badge>} /><div className="explain-grid mt-7"><section className="section-card explain-card"><p className="eyebrow">Exact Shapley attribution</p><h2>Why this transaction was flagged</h2><p>Each bar shows a feature&apos;s measured contribution to the deployed ensemble score. Positive values increase risk; protective values reduce it.</p>{visibleFactors.map(({ label, value, direction }) => <div className="bar-row" key={label}><span>{label}</span><div className="bar-track"><div className={`bar-fill ${direction === 'protective' ? 'protective' : ''}`} style={{ width: `${value}%` }} /></div><strong className="text-right text-[#cde4e7]">{value}%</strong></div>)}{explanationMeta.baseRisk !== undefined && <p className="tiny muted mt-5">Base risk {explanationMeta.baseRisk}% → ensemble risk {Math.round((explanationMeta.ensembleProbability ?? selected.risk / 100) * 100)}% · decision threshold {Math.round((explanationMeta.decisionThreshold ?? 0.5) * 100)}%</p>}</section><section className="section-card selected-case"><p className="eyebrow">Selected transaction</p><h2>{selected.id}</h2><Badge className="bg-[#5b2434] text-[#ff8097]">{riskLevel(selected.risk)} risk</Badge><p className="mt-4">{selected.reason}</p><div className="case-amount">{selected.amount}</div><div className="tiny muted">{selected.supplier} · {selected.pattern}</div><Button onClick={() => setView('alerts')} className="mt-6 w-full bg-[#0dd3da] text-[#03202a] hover:bg-[#5be8e5]">Open case queue <ArrowUpRight size={14} /></Button></section></div><div className="section-card mt-4 flex flex-wrap items-center justify-between gap-3 p-4"><div className="flex items-center gap-3"><ShieldCheck className="text-[#24d9c9]" size={19} /><div><strong className="text-xs">Human review remains required</strong><p className="tiny muted mt-1">Model explanations support investigation; they do not replace an authorized decision.</p></div></div><Button variant="outline" className="border-[rgba(111,166,188,.22)] text-[#b3cbd1]" onClick={() => setView('audit')}>View audit evidence</Button></div></>;
+  const decisionLabels: Record<ReviewRecord['decision'], string> = { confirmed_fraud: 'Confirmed fraud', false_positive: 'False positive', needs_evidence: 'Needs evidence' };
+  return <><SectionHeader eyebrow="Responsible AI" title="Explainable AI" subtitle="Make every flagged transaction easier to challenge, validate, and act on with feature-level explanations." action={<Badge className="border border-[#1f7f7a] bg-[#0c3b40] text-[#43e5d5]"><Sparkles size={13} /> Exact SHAP</Badge>} /><div className="explain-grid mt-7"><section className="section-card explain-card"><p className="eyebrow">Exact Shapley attribution</p><h2>Why this transaction was flagged</h2><p>Each bar shows a feature&apos;s measured contribution to the deployed ensemble score. Positive values increase risk; protective values reduce it.</p>{visibleFactors.map(({ label, value, direction }) => <div className="bar-row" key={label}><span>{label}</span><div className="bar-track"><div className={`bar-fill ${direction === 'protective' ? 'protective' : ''}`} style={{ width: `${value}%` }} /></div><strong className="text-right text-[#cde4e7]">{value}%</strong></div>)}{explanationMeta.baseRisk !== undefined && <p className="tiny muted mt-5">Base risk {explanationMeta.baseRisk}% → ensemble risk {Math.round((explanationMeta.ensembleProbability ?? selected.risk / 100) * 100)}% · decision threshold {Math.round((explanationMeta.decisionThreshold ?? 0.5) * 100)}%</p>}</section><section className="section-card selected-case"><p className="eyebrow">Selected transaction</p><h2>{selected.id}</h2><Badge className="bg-[#5b2434] text-[#ff8097]">{riskLevel(selected.risk)} risk</Badge><p className="mt-4">{selected.reason}</p><div className="case-amount">{selected.amount}</div><div className="tiny muted">{selected.supplier} · {selected.pattern}</div><Button onClick={() => setView('alerts')} className="mt-6 w-full bg-[#0dd3da] text-[#03202a] hover:bg-[#5be8e5]">Open case queue <ArrowUpRight size={14} /></Button><div className="mt-7 border-t border-[rgba(111,166,188,.14)] pt-5"><p className="eyebrow">Human review outcome</p><p className="tiny muted mt-1">Record the adjudication so future model evaluation can use real reviewer evidence.</p><Textarea value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} placeholder="Optional review note" maxLength={1000} className="mt-4 min-h-20 border-[rgba(111,166,188,.22)] bg-[#0a2134] text-[#dceff1]" /><div className="mt-3 grid gap-2"><Button disabled={isSubmittingReview} onClick={() => void recordReview('confirmed_fraud')} className="bg-[#8d3048] text-[#fff1f3] hover:bg-[#a43d57]">Confirmed fraud</Button><Button disabled={isSubmittingReview} onClick={() => void recordReview('false_positive')} variant="outline" className="border-[rgba(255,194,74,.4)] text-[#ffc24a]">False positive</Button><Button disabled={isSubmittingReview} onClick={() => void recordReview('needs_evidence')} variant="outline" className="border-[rgba(111,166,188,.28)] text-[#b3cbd1]">Needs evidence</Button></div>{reviews.length > 0 && <div className="mt-5"><p className="tiny muted">Recent decisions</p>{reviews.slice(0, 3).map((review) => <div className="mt-2 border-l-2 border-[#1b7777] pl-3" key={review.id}><strong className="text-xs">{decisionLabels[review.decision]}</strong><p className="tiny muted">{review.note || 'No note added'} · {new Date(review.created_at).toLocaleString('en', { month: 'short', day: '2-digit', hour: '2-digit' })}</p></div>)}</div>}</div></section></div><div className="section-card mt-4 flex flex-wrap items-center justify-between gap-3 p-4"><div className="flex items-center gap-3"><ShieldCheck className="text-[#24d9c9]" size={19} /><div><strong className="text-xs">Human review remains required</strong><p className="tiny muted mt-1">Model explanations support investigation; they do not replace an authorized decision.</p></div></div><Button variant="outline" className="border-[rgba(111,166,188,.22)] text-[#b3cbd1]" onClick={() => setView('audit')}>View audit evidence</Button></div></>;
 }
 
 function ModelsView({ role, can, notify }: { role: Role; can: (module: string) => boolean; notify: (message: string) => void }) {

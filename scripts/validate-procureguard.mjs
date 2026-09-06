@@ -96,6 +96,15 @@ async function checkApiFlow() {
     assert(explanation.response.status === 403, `Restricted explanation request returned ${explanation.response.status}, expected 403.`);
   }
 
+  const reviewDecision = await request('/api/reviews', { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ transactionId: 'PO-10488', decision: 'confirmed_fraud', note: 'Verification evidence supports the model flag.' }) });
+  if (role === 'Admin' || role === 'Auditor' || role === 'Manager') {
+    assert(reviewDecision.response.status === 201 && reviewDecision.body?.review?.decision === 'confirmed_fraud', `Review decision request failed with ${reviewDecision.response.status}.`);
+    const reviewHistory = await request('/api/reviews?id=PO-10488', { headers });
+    assert(reviewHistory.response.ok && reviewHistory.body?.reviews?.some((review) => review.id === reviewDecision.body.review.id), 'Review history did not return the recorded decision.');
+  } else {
+    assert(reviewDecision.response.status === 403, `Restricted review decision request returned ${reviewDecision.response.status}, expected 403.`);
+  }
+
   const models = await request('/api/models', { headers });
   if (role === 'Admin' || role === 'Manager') assert(models.response.ok && models.body?.models?.length === 3, `Model registry request failed with ${models.response.status}.`);
   else assert(models.response.status === 403, `Restricted model registry request returned ${models.response.status}, expected 403.`);
@@ -103,7 +112,7 @@ async function checkApiFlow() {
   const audit = await request('/api/audit', { headers });
   assert(audit.response.ok && Array.isArray(audit.body?.events) && audit.body.events.some((event) => event.event_type === 'import' && event.actor_id), `Audit trail did not record the authenticated write actions.`);
 
-  return { role, transactions: transactions.body.transactions.length, scanned: scan.body.scanned, scanDurationMs: scan.body.durationMs, imported: imported.body.imported, reportStatus: reportResponse.status, explanationStatus: explanation.response.status, modelsStatus: models.response.status, monitoringStatus: monitoring.response.status, usersStatus, auditEvents: audit.body.events.length };
+  return { role, transactions: transactions.body.transactions.length, scanned: scan.body.scanned, scanDurationMs: scan.body.durationMs, imported: imported.body.imported, reportStatus: reportResponse.status, explanationStatus: explanation.response.status, reviewStatus: reviewDecision.response.status, modelsStatus: models.response.status, monitoringStatus: monitoring.response.status, usersStatus, auditEvents: audit.body.events.length };
 }
 
 const artifactResult = checkArtifact();

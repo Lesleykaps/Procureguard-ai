@@ -67,3 +67,15 @@ export const scanRuns = sqliteTable('scan_runs', {
 }, (table) => ({
   createdAtIdx: index('idx_scan_runs_created_at').on(table.createdAt),
 }));
+
+export const reviewDecisions = sqliteTable('review_decisions', {
+  id: text('id').primaryKey(),
+  transactionId: text('transaction_id').notNull(),
+  actorId: text('actor_id').notNull(),
+  decision: text('decision').notNull(),
+  note: text('note'),
+  createdAt: text('created_at').notNull(),
+}, (table) => ({
+  transactionIdx: index('idx_review_decisions_transaction_id').on(table.transactionId),
+  createdAtIdx: index('idx_review_decisions_created_at').on(table.createdAt),
+}));
