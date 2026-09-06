@@ -1,9 +1,12 @@
-import { explainTransaction } from '../../../lib/procurement-db';
+import { explainTransaction, getAuthenticatedActor, hasPermission } from '../../../lib/procurement-db';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
   try {
+    const actor = await getAuthenticatedActor(request);
+    if (!actor) return Response.json({ error: 'Sign-in required.' }, { status: 401 });
+    if (!hasPermission(actor.role, 'explain:read')) return Response.json({ error: 'Your role cannot view model explanations.' }, { status: 403 });
     const id = new URL(request.url).searchParams.get('id');
     if (!id) return Response.json({ error: 'A transaction id is required.' }, { status: 400 });
     const explanation = await explainTransaction(id);

@@ -2,6 +2,16 @@ import { env } from 'cloudflare:workers';
 import trainedArtifact from '../ml/model-artifacts.json';
 
 export type RiskStatus = 'Open' | 'Reviewed' | 'Cleared';
+export type AppRole = 'Admin' | 'Auditor' | 'Procurement Officer' | 'Manager';
+export type AppPermission = 'transactions:read' | 'transactions:import' | 'transactions:review' | 'scan:run' | 'explain:read' | 'models:read' | 'audit:read';
+export type AuthenticatedActor = { userId: string; email: string; displayName: string; role: AppRole };
+
+const rolePermissions: Record<AppRole, AppPermission[]> = {
+  Admin: ['transactions:read', 'transactions:import', 'transactions:review', 'scan:run', 'explain:read', 'models:read', 'audit:read'],
+  Auditor: ['transactions:read', 'transactions:review', 'scan:run', 'explain:read', 'audit:read'],
+  'Procurement Officer': ['transactions:read', 'transactions:import'],
+  Manager: ['transactions:read', 'transactions:review', 'scan:run', 'explain:read', 'models:read', 'audit:read'],
+};
 
 export type TransactionRecord = {
   id: string;
@@ -31,8 +41,36 @@ const demoRecords = [
   ['INV-88210', 'Apex Medical', 12980, 'Vendor conflict', 79, 'Open', 'Approver and vendor share a matching contact domain from prior records.'],
 ] as const;
 
-export function actorFromRequest(request: Request) {
-  return request.headers.get('oai-authenticated-user-id') ?? 'demo-auditor';
+function decodeDisplayName(request: Request, email: string) {
+  const encoded = request.headers.get('oai-authenticated-user-full-name');
+  if (encoded && request.headers.get('oai-authenticated-user-full-name-encoding') === 'percent-encoded-utf-8') {
+    try { return decodeURIComponent(encoded); } catch { return email; }
+  }
+  return email;
+}
+
+function normalizeRole(value: unknown): AppRole {
+  return value === 'Admin' || value === 'Auditor' || value === 'Procurement Officer' || value === 'Manager' ? value : 'Auditor';
+}
+
+export function hasPermission(role: AppRole, permission: AppPermission) {
+  return rolePermissions[role].includes(permission);
+}
+
+export async function getAuthenticatedActor(request: Request): Promise<AuthenticatedActor | null> {
+  const userId = request.headers.get('oai-authenticated-user-id');
+  const email = request.headers.get('oai-authenticated-user-email');
+  if (!userId || !email) return null;
+  const existing = await env.DB.prepare(`SELECT id, email, display_name, role FROM users WHERE id = ?`).bind(userId).first<{ id: string; email: string; display_name: string; role: string }>();
+  if (!existing) {
+    const count = await env.DB.prepare(`SELECT COUNT(*) AS total FROM users`).first<{ total: number }>();
+    const initialRole: AppRole = Number(count?.total ?? 0) === 0 ? 'Admin' : 'Auditor';
+    await env.DB.prepare(`INSERT OR IGNORE INTO users (id, email, display_name, role, created_at) VALUES (?, ?, ?, ?, ?)`)
+      .bind(userId, email, decodeDisplayName(request, email), initialRole, new Date().toISOString()).run();
+  }
+  const user = await env.DB.prepare(`SELECT id, email, display_name, role FROM users WHERE id = ?`).bind(userId).first<{ id: string; email: string; display_name: string; role: string }>();
+  if (!user) return null;
+  return { userId: user.id, email: user.email, displayName: user.display_name || email, role: normalizeRole(user.role) };
 }
 
 export function displayDate(isoDate: string) {

@@ -9,14 +9,12 @@ import {
   Check,
   CheckCircle2,
   ChevronRight,
-  CircleHelp,
   ClipboardList,
   Clock3,
   Database,
   Download,
   FileBarChart,
   FileCheck2,
-  FileUp,
   Filter,
   Gauge,
   Info,
@@ -25,7 +23,6 @@ import {
   Menu,
   Moon,
   MoreHorizontal,
-  Network,
   Play,
   RefreshCw,
   Search,
@@ -34,13 +31,11 @@ import {
   Upload,
   UserRound,
   Users,
-  X,
-  XCircle,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 
 type Role = 'Admin' | 'Auditor' | 'Procurement Officer' | 'Manager';
@@ -91,6 +86,13 @@ const roleCopy: Record<Role, { title: string; subtitle: string; allowed: string[
   Manager: { title: 'Manager', subtitle: 'Oversight access for high-level risk monitoring, escalation decisions, and executive reporting.', allowed: ['Dashboard', 'Transactions', 'Fraud Alerts', 'Explain AI', 'Models', 'Audit Trail', 'Reports'], restricted: ['User Management', 'Model Retraining', 'Raw Data Editing'] },
 };
 
+const actionPermissions: Record<Role, { import: boolean; review: boolean; scan: boolean }> = {
+  Admin: { import: true, review: true, scan: true },
+  Auditor: { import: false, review: true, scan: true },
+  'Procurement Officer': { import: true, review: false, scan: false },
+  Manager: { import: false, review: true, scan: true },
+};
+
 function riskLevel(score: number): Risk {
   if (score >= 80) return 'High';
   if (score >= 55) return 'Medium';
@@ -115,7 +117,7 @@ function MetricCard({ label, value, note, icon, tone = 'teal' }: { label: string
   </Card>;
 }
 
-export function AppShell({ authenticatedUser }: { authenticatedUser: { displayName: string; email: string } | null }) {
+export function AppShell({ authenticatedUser, signOutPath }: { authenticatedUser: { displayName: string; email: string }; signOutPath: string }) {
   const [view, setView] = useState<View>('dashboard');
   const [role, setRole] = useState<Role>('Auditor');
   const [transactions, setTransactions] = useState(seedTransactions);
@@ -142,10 +144,11 @@ export function AppShell({ authenticatedUser }: { authenticatedUser: { displayNa
     let active = true;
     async function loadLiveData() {
       try {
-        const [transactionsResponse, auditResponse, modelsResponse] = await Promise.all([
+        const [transactionsResponse, auditResponse, modelsResponse, sessionResponse] = await Promise.all([
           fetch('/api/transactions', { cache: 'no-store' }),
           fetch('/api/audit', { cache: 'no-store' }),
           fetch('/api/models', { cache: 'no-store' }),
+          fetch('/api/session', { cache: 'no-store' }),
         ]);
         const transactionPayload = await transactionsResponse.json() as { transactions?: Txn[] };
         if (active && transactionsResponse.ok && transactionPayload.transactions?.length) setTransactions(transactionPayload.transactions);
@@ -156,6 +159,8 @@ export function AppShell({ authenticatedUser }: { authenticatedUser: { displayNa
           setModelAccuracy(`${modelsPayload.models[0].accuracy}%`);
           setModelFalsePositiveRate(`${modelsPayload.models[0].false_positive_rate}%`);
         }
+        const sessionPayload = await sessionResponse.json() as { user?: { role?: Role } };
+        if (active && sessionResponse.ok && sessionPayload.user?.role) setRole(sessionPayload.user.role);
       } catch {
         // The seeded client view remains usable while the local or hosted data service is unavailable.
       }
@@ -170,6 +175,7 @@ export function AppShell({ authenticatedUser }: { authenticatedUser: { displayNa
   }
 
   async function runScan() {
+    if (!actionPermissions[role].scan) { notify('Your role does not have permission to run scans.'); return; }
     setIsScanning(true);
     notify('Scan started — evaluating the latest procurement batch.');
     try {
@@ -189,6 +195,7 @@ export function AppShell({ authenticatedUser }: { authenticatedUser: { displayNa
   }
 
   async function updateStatus(id: string, status: Txn['status']) {
+    if (!actionPermissions[role].review) { notify('Your role does not have permission to review cases.'); return; }
     setTransactions((items) => items.map((item) => item.id === id ? { ...item, status } : item));
     notify(`${id} marked as ${status.toLowerCase()}.`);
     try {
@@ -201,6 +208,7 @@ export function AppShell({ authenticatedUser }: { authenticatedUser: { displayNa
   }
 
   async function handleUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    if (!actionPermissions[role].import) { notify('Your role does not have permission to import records.'); event.target.value = ''; return; }
     const file = event.target.files?.[0];
     if (!file) return;
     const form = new FormData();
@@ -222,12 +230,15 @@ export function AppShell({ authenticatedUser }: { authenticatedUser: { displayNa
   }
 
   const can = (module: string) => roleCopy[role].allowed.includes(module);
+  const canImport = actionPermissions[role].import;
+  const canReview = actionPermissions[role].review;
+  const canScan = actionPermissions[role].scan;
 
   return <div className="app-grid">
     <aside className="sidebar">
       <div className="logo-lockup flex items-center gap-3 px-2"><div className="logo-mark">PG</div><div className="logo-copy"><div className="logo-title">ProcureGuard AI</div><div className="logo-subtitle">Procurement Fraud Detection</div></div></div>
       <nav className="nav-list mt-9 flex flex-col gap-1" aria-label="Primary navigation">
-        {navItems.map(({ key, label, icon: Icon }) => <button key={key} className={`nav-button ${view === key ? 'active' : ''}`} onClick={() => setView(key)}><Icon size={16} /><span className="nav-label">{label}</span></button>)}
+        {navItems.filter(({ label }) => roleCopy[role].allowed.includes(label)).map(({ key, label, icon: Icon }) => <button key={key} className={`nav-button ${view === key ? 'active' : ''}`} onClick={() => setView(key)}><Icon size={16} /><span className="nav-label">{label}</span></button>)}
       </nav>
       <div className="mt-auto hidden rounded-xl border border-[rgba(111,166,188,.16)] bg-[#0a2134] p-3 sm:block model-mini-copy"><div className="tiny muted">Current model</div><div className="mt-2 text-xs font-semibold text-[#effeff]">XGBoost Ensemble</div><div className="tiny mt-1 text-[#17d8cf]">SHAP enabled</div></div>
     </aside>
@@ -235,14 +246,14 @@ export function AppShell({ authenticatedUser }: { authenticatedUser: { displayNa
     <div className="main-shell">
       <header className="topbar">
         <div className="flex items-center gap-3"><Menu className="hidden text-[#8aa9b7] max-sm:block" size={19} /><div className="hidden text-sm font-semibold text-[#dceff1] md:block">AI-powered procurement fraud detection</div></div>
-        <div className="flex items-center gap-3"><div className="relative"><Search className="absolute left-3 top-2.5 text-[#668796]" size={14} /><Input className="search-input pl-9" placeholder="Search supplier, PO, invoice" value={query} onChange={(event) => setQuery(event.target.value)} /></div><Button variant="outline" size="icon" aria-label="Toggle appearance" className="border-[rgba(111,166,188,.2)] bg-[#0b2132] text-[#9fb9c2] hover:bg-[#12364a]"><Moon size={15} /></Button><Button onClick={runScan} disabled={isScanning} className="h-9 bg-[#0dd3da] px-3 text-[11px] font-bold text-[#03202a] hover:bg-[#5be8e5]"><Play size={13} fill="currentColor" />{isScanning ? 'Scanning...' : 'Run scan'}</Button></div>
+        <div className="flex items-center gap-3"><div className="relative"><Search className="absolute left-3 top-2.5 text-[#668796]" size={14} /><Input className="search-input pl-9" placeholder="Search supplier, PO, invoice" value={query} onChange={(event) => setQuery(event.target.value)} /></div><Button variant="outline" size="icon" aria-label="Toggle appearance" className="border-[rgba(111,166,188,.2)] bg-[#0b2132] text-[#9fb9c2] hover:bg-[#12364a]"><Moon size={15} /></Button><Button onClick={runScan} disabled={isScanning || !canScan} className="h-9 bg-[#0dd3da] px-3 text-[11px] font-bold text-[#03202a] hover:bg-[#5be8e5]"><Play size={13} fill="currentColor" />{isScanning ? 'Scanning...' : 'Run scan'}</Button></div>
       </header>
 
       <main className="content">
-        <div className="mb-6 flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2"><span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#0f3447] text-[#23ddd2]"><UserRound size={14} /></span><span className="text-xs text-[#a1bbc3]">Signed in as <strong className="text-[#e7f5f7]">{userName}</strong></span><Badge variant="outline" className="border-[#1a827f] text-[#2ee0d4]">{role}</Badge></div><div className="role-switcher"><span className="tiny muted self-center">Preview role:</span>{(Object.keys(roleCopy) as Role[]).map((item) => <button key={item} className={`role-chip ${role === item ? 'active' : ''}`} onClick={() => { setRole(item); notify(`Previewing ${item} permissions.`); }}>{item}</button>)}</div></div>
-        {view === 'dashboard' && <Dashboard transactions={transactions} modelAccuracy={modelAccuracy} modelFalsePositiveRate={modelFalsePositiveRate} setView={setView} setSelectedId={setSelectedId} runScan={runScan} />}
-        {view === 'transactions' && <TransactionsView transactions={visibleTransactions} onUpload={() => fileRef.current?.click()} updateStatus={updateStatus} setSelectedId={(id) => { setSelectedId(id); setView('explain'); }} />}
-        {view === 'alerts' && <AlertsView alerts={visibleAlerts} filter={alertFilter} setFilter={setAlertFilter} setSelectedId={(id) => { setSelectedId(id); setView('explain'); }} updateStatus={updateStatus} />}
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2"><span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#0f3447] text-[#23ddd2]"><UserRound size={14} /></span><span className="text-xs text-[#a1bbc3]">Signed in as <strong className="text-[#e7f5f7]">{userName}</strong></span><Badge variant="outline" className="border-[#1a827f] text-[#2ee0d4]">{role}</Badge></div><a href={signOutPath} className="tiny muted hover:text-[#2ee0d4]">Sign out</a></div>
+        {view === 'dashboard' && <Dashboard transactions={transactions} modelAccuracy={modelAccuracy} modelFalsePositiveRate={modelFalsePositiveRate} setView={setView} setSelectedId={setSelectedId} runScan={runScan} canScan={canScan} />}
+        {view === 'transactions' && <TransactionsView transactions={visibleTransactions} onUpload={() => fileRef.current?.click()} updateStatus={updateStatus} setSelectedId={(id) => { setSelectedId(id); setView('explain'); }} canImport={canImport} />}
+        {view === 'alerts' && <AlertsView alerts={visibleAlerts} filter={alertFilter} setFilter={setAlertFilter} setSelectedId={(id) => { setSelectedId(id); setView('explain'); }} updateStatus={updateStatus} canReview={canReview} />}
         {view === 'explain' && <ExplainView selected={selected} setView={setView} />}
         {view === 'models' && <ModelsView role={role} can={can} notify={notify} />}
         {view === 'audit' && <AuditView events={liveAudit} />}
@@ -254,23 +265,23 @@ export function AppShell({ authenticatedUser }: { authenticatedUser: { displayNa
   </div>;
 }
 
-function Dashboard({ transactions, modelAccuracy, modelFalsePositiveRate, setView, setSelectedId, runScan }: { transactions: Txn[]; modelAccuracy: string; modelFalsePositiveRate: string; setView: (view: View) => void; setSelectedId: (id: string) => void; runScan: () => void }) {
+function Dashboard({ transactions, modelAccuracy, modelFalsePositiveRate, setView, setSelectedId, runScan, canScan }: { transactions: Txn[]; modelAccuracy: string; modelFalsePositiveRate: string; setView: (view: View) => void; setSelectedId: (id: string) => void; runScan: () => void; canScan: boolean }) {
   const highRisk = transactions.filter((item) => item.risk >= 80);
   const openHighRisk = highRisk.filter((item) => item.status === 'Open').length;
   return <>
-    <SectionHeader eyebrow="Live risk intelligence" title="Command dashboard" subtitle="A clear view of procurement risk, model health, and the cases that need attention first." action={<Button onClick={runScan} variant="outline" className="h-9 border-[rgba(24,216,207,.4)] bg-[#0c2638] text-[#28ded4] hover:bg-[#10384c]"><RefreshCw size={14} /> Refresh intelligence</Button>} />
+    <SectionHeader eyebrow="Live risk intelligence" title="Command dashboard" subtitle="A clear view of procurement risk, model health, and the cases that need attention first." action={<Button onClick={runScan} disabled={!canScan} variant="outline" className="h-9 border-[rgba(24,216,207,.4)] bg-[#0c2638] text-[#28ded4] hover:bg-[#10384c]"><RefreshCw size={14} /> Refresh intelligence</Button>} />
     <div className="metric-grid"><MetricCard label="High-risk alerts" value={String(openHighRisk)} note={<><strong>{highRisk.length}</strong> high-risk records tracked</>} icon={<AlertTriangle size={14} className="text-[#ff5877]" />} tone="red" /><MetricCard label="Detection latency" value="38s" note={<>Target: <strong>under 60s</strong></>} icon={<Clock3 size={14} className="text-[#2edcd1]" />} /><MetricCard label="False positive rate" value={modelFalsePositiveRate} note={<>Objective: <strong>below 10%</strong></>} icon={<Gauge size={14} className="text-[#ffc24a]" />} tone="orange" /><MetricCard label="Model accuracy" value={modelAccuracy} note={<><strong>XGBoost</strong> test split</>} icon={<BarChart3 size={14} className="text-[#2edcd1]" />} /></div>
     <div className="dashboard-grid"><section className="section-card map-card"><div className="card-heading"><div><p>Live risk intelligence</p><h2>Procurement risk map</h2></div><Badge className="bg-[#0b756f] text-[#79fff0]">Live</Badge></div><div className="map-stage"><div className="map-core" /><span className="map-label orange" style={{ left: '17%', top: '24%' }}>Invoice split</span><span className="map-label red" style={{ right: '13%', top: '28%' }}>Single bidder</span><span className="map-label red" style={{ left: '22%', bottom: '22%' }}>Overbilling</span><span className="map-label green" style={{ right: '17%', bottom: '20%' }}>Vendor conflict</span><div className="absolute bottom-3 left-3 flex items-center gap-4 text-[10px] text-[#7898a7]"><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-[#ff4c6d]" />High risk</span><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-[#ffbe45]" />Medium</span><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-[#22d8c2]" />Low</span></div></div></section><section className="section-card priority-card"><div className="card-heading"><div><p>Immediate action</p><h2>Priority alerts</h2></div><button className="action-link" onClick={() => setView('alerts')}>View all <ArrowUpRight className="inline" size={13} /></button></div>{highRisk.slice(0, 3).map((item) => <div className="alert-item" key={item.id}><div className="alert-row"><RiskBadge score={item.risk} /><span className="mono text-[11px] text-[#a6c0c7]">{item.amount}</span></div><h3>{item.id} · {item.supplier}</h3><p>{item.reason}</p><button className="action-link mt-3" onClick={() => { setSelectedId(item.id); setView('explain'); }}>Investigate <ChevronRight className="inline" size={13} /></button></div>)}</section></div>
   </>;
 }
 
-function TransactionsView({ transactions, onUpload, updateStatus: _updateStatus, setSelectedId }: { transactions: Txn[]; onUpload: () => void; updateStatus: (id: string, status: Txn['status']) => void; setSelectedId: (id: string) => void }) {
-  return <><SectionHeader eyebrow="Real-time monitoring" title="Live transaction monitor" subtitle="Every procurement record is screened against anomaly patterns before it reaches the next approval step." action={<Button onClick={onUpload} variant="outline" className="border-[rgba(24,216,207,.4)] text-[#28ded4]"><Upload size={14} /> Import CSV</Button>} /><div className="toolbar"><div className="filter-row"><button className="filter-button active">All transactions</button><button className="filter-button">Open cases</button><button className="filter-button">Cleared</button></div><div className="flex items-center gap-2 text-[11px] muted"><Database size={14} /> {transactions.length} records in view <Filter size={14} /></div></div><section className="section-card table-wrap"><table className="data-table"><thead><tr><th>PO / Invoice</th><th>Supplier</th><th>Amount</th><th>Pattern</th><th>Risk</th><th>Status</th><th /></tr></thead><tbody>{transactions.map((item) => <tr key={item.id}><td><button className="text-left font-semibold text-[#ecfbfc] hover:text-[#20ddd3]" onClick={() => setSelectedId(item.id)}>{item.id}</button><span className="cell-sub">{item.date}</span></td><td>{item.supplier}</td><td className="mono">{item.amount}</td><td>{item.pattern}</td><td><RiskBadge score={item.risk} /></td><td><span className={`status ${item.status.toLowerCase()}`}>{item.status}</span></td><td><button aria-label={`Review ${item.id}`} className="action-link" onClick={() => setSelectedId(item.id)}><MoreHorizontal size={16} /></button></td></tr>)}</tbody></table></section><p className="tiny muted mt-4"><Info className="mr-1 inline" size={12} /> Imported records are scored in the prototype using the configured risk model snapshot.</p></>;
+function TransactionsView({ transactions, onUpload, updateStatus: _updateStatus, setSelectedId, canImport }: { transactions: Txn[]; onUpload: () => void; updateStatus: (id: string, status: Txn['status']) => void; setSelectedId: (id: string) => void; canImport: boolean }) {
+  return <><SectionHeader eyebrow="Real-time monitoring" title="Live transaction monitor" subtitle="Every procurement record is screened against anomaly patterns before it reaches the next approval step." action={<Button onClick={onUpload} disabled={!canImport} variant="outline" className="border-[rgba(24,216,207,.4)] text-[#28ded4]"><Upload size={14} /> {canImport ? 'Import CSV' : 'Import restricted'}</Button>} /><div className="toolbar"><div className="filter-row"><button className="filter-button active">All transactions</button><button className="filter-button">Open cases</button><button className="filter-button">Cleared</button></div><div className="flex items-center gap-2 text-[11px] muted"><Database size={14} /> {transactions.length} records in view <Filter size={14} /></div></div><section className="section-card table-wrap"><table className="data-table"><thead><tr><th>PO / Invoice</th><th>Supplier</th><th>Amount</th><th>Pattern</th><th>Risk</th><th>Status</th><th aria-label="Actions" /></tr></thead><tbody>{transactions.map((item) => <tr key={item.id}><td><button className="text-left font-semibold text-[#ecfbfc] hover:text-[#20ddd3]" onClick={() => setSelectedId(item.id)}>{item.id}</button><span className="cell-sub">{item.date}</span></td><td>{item.supplier}</td><td className="mono">{item.amount}</td><td>{item.pattern}</td><td><RiskBadge score={item.risk} /></td><td><span className={`status ${item.status.toLowerCase()}`}>{item.status}</span></td><td><button aria-label={`Review ${item.id}`} className="action-link" onClick={() => setSelectedId(item.id)}><MoreHorizontal size={16} /></button></td></tr>)}</tbody></table></section><p className="tiny muted mt-4"><Info className="mr-1 inline" size={12} /> Imported records are scored in the prototype using the configured risk model snapshot.</p></>;
 }
 
-function AlertsView({ alerts, filter, setFilter, setSelectedId, updateStatus }: { alerts: Txn[]; filter: 'All' | Risk | 'Open' | 'Reviewed'; setFilter: (filter: 'All' | Risk | 'Open' | 'Reviewed') => void; setSelectedId: (id: string) => void; updateStatus: (id: string, status: Txn['status']) => void }) {
+function AlertsView({ alerts, filter, setFilter, setSelectedId, updateStatus, canReview }: { alerts: Txn[]; filter: 'All' | Risk | 'Open' | 'Reviewed'; setFilter: (filter: 'All' | Risk | 'Open' | 'Reviewed') => void; setSelectedId: (id: string) => void; updateStatus: (id: string, status: Txn['status']) => void; canReview: boolean }) {
   const filters: ('All' | Risk | 'Open' | 'Reviewed')[] = ['All', 'High', 'Medium', 'Open', 'Reviewed'];
-  return <><SectionHeader eyebrow="Case management" title="Fraud alert queue" subtitle="Prioritize high-risk cases, inspect the evidence, and keep investigation status accountable." action={<Button onClick={() => alerts.forEach((item) => item.status === 'Open' && updateStatus(item.id, 'Reviewed'))} className="h-9 bg-[#0dd3da] text-[#03202a] hover:bg-[#5be8e5]"><Check size={14} /> Mark open as reviewed</Button>} /><div className="toolbar"><div className="filter-row">{filters.map((item) => <button key={item} className={`filter-button ${filter === item ? 'active' : ''}`} onClick={() => setFilter(item)}>{item}</button>)}</div><span className="tiny muted">{alerts.length} cases shown</span></div><div className="queue-grid">{alerts.map((item) => <section className="section-card queue-card" key={item.id}><div><div className="flex items-center justify-between"><RiskBadge score={item.risk} /><span className="tiny muted">{item.date}</span></div><h3>{item.id} · {item.supplier}</h3><p>{item.reason}</p></div><div className="flex items-center justify-between"><span className={`status ${item.status.toLowerCase()}`}>{item.status}</span><button className="action-link" onClick={() => { setSelectedId(item.id); }}>Investigate <ChevronRight className="inline" size={13} /></button></div></section>)}</div></>;
+  return <><SectionHeader eyebrow="Case management" title="Fraud alert queue" subtitle="Prioritize high-risk cases, inspect the evidence, and keep investigation status accountable." action={<Button onClick={() => alerts.forEach((item) => item.status === 'Open' && updateStatus(item.id, 'Reviewed'))} disabled={!canReview} className="h-9 bg-[#0dd3da] text-[#03202a] hover:bg-[#5be8e5]"><Check size={14} /> {canReview ? 'Mark open as reviewed' : 'Review restricted'}</Button>} /><div className="toolbar"><div className="filter-row">{filters.map((item) => <button key={item} className={`filter-button ${filter === item ? 'active' : ''}`} onClick={() => setFilter(item)}>{item}</button>)}</div><span className="tiny muted">{alerts.length} cases shown</span></div><div className="queue-grid">{alerts.map((item) => <section className="section-card queue-card" key={item.id}><div><div className="flex items-center justify-between"><RiskBadge score={item.risk} /><span className="tiny muted">{item.date}</span></div><h3>{item.id} · {item.supplier}</h3><p>{item.reason}</p></div><div className="flex items-center justify-between"><span className={`status ${item.status.toLowerCase()}`}>{item.status}</span><button className="action-link" onClick={() => { setSelectedId(item.id); }}>Investigate <ChevronRight className="inline" size={13} /></button></div></section>)}</div></>;
 }
 
 function ExplainView({ selected, setView }: { selected: Txn; setView: (view: View) => void }) {

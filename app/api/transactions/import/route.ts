@@ -1,10 +1,13 @@
-import { actorFromRequest, addAuditEvent, parseCsv, riskLevel, scoreTransaction } from '../../../../lib/procurement-db';
+import { addAuditEvent, getAuthenticatedActor, hasPermission, parseCsv, riskLevel, scoreTransaction } from '../../../../lib/procurement-db';
 import { env } from 'cloudflare:workers';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: Request) {
   try {
+    const actor = await getAuthenticatedActor(request);
+    if (!actor) return Response.json({ error: 'Sign-in required.' }, { status: 401 });
+    if (!hasPermission(actor.role, 'transactions:import')) return Response.json({ error: 'Your role cannot import procurement records.' }, { status: 403 });
     const form = await request.formData();
     const file = form.get('file');
     if (!(file instanceof File)) return Response.json({ error: 'Choose a CSV file to import.' }, { status: 400 });
@@ -24,7 +27,7 @@ export async function POST(request: Request) {
       }
     }
     await env.DB.batch(statements);
-    await addAuditEvent(actorFromRequest(request), 'import', `${records.length} procurement records imported from ${file.name}.`);
+    await addAuditEvent(actor.userId, 'import', `${records.length} procurement records imported from ${file.name}.`);
     return Response.json({ imported: records.length });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : 'Unable to import CSV.' }, { status: 400 });
