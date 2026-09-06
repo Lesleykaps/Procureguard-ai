@@ -116,7 +116,8 @@ type ReviewQueueSummary = {
     status: Txn['status'];
     reason: string;
     createdAt: string;
-    reviewState: 'unreviewed' | 'needs_evidence';
+    reviewState: 'unreviewed' | 'needs_evidence' | 'conflict';
+    reviewCount: number;
     priority: 'high' | 'medium' | 'low';
   }[];
   coverage: {
@@ -125,6 +126,10 @@ type ReviewQueueSummary = {
     confirmedFraud: number;
     falsePositive: number;
     needsEvidence: number;
+    conflictingCases: number;
+    eligibleForTraining: number;
+    needsSecondReview: number;
+    reviewerCount: number;
     unreviewed: number;
     highRiskUnreviewed: number;
     percentage: number;
@@ -1125,7 +1130,7 @@ function Dashboard({
               Open review queue <ArrowUpRight className="inline" size={13} />
             </button>
           </div>
-          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          <div className="mt-4 grid gap-3 sm:grid-cols-4">
             <div className="rounded-lg border border-[rgba(111,166,188,.14)] bg-[#0a2134] p-3">
               <span className="tiny muted">Label coverage</span>
               <strong className="mt-1 block text-base text-[#2ee0d4]">{reviewQueue.coverage.percentage}%</strong>
@@ -1137,6 +1142,11 @@ function Dashboard({
             <div className="rounded-lg border border-[rgba(111,166,188,.14)] bg-[#0a2134] p-3">
               <span className="tiny muted">Label balance</span>
               <strong className="mt-1 block text-base text-[#e8fbfb]">{reviewQueue.coverage.confirmedFraud} fraud · {reviewQueue.coverage.falsePositive} clear</strong>
+            </div>
+            <div className="rounded-lg border border-[rgba(111,166,188,.14)] bg-[#0a2134] p-3">
+              <span className="tiny muted">Training eligibility</span>
+              <strong className={`mt-1 block text-base ${reviewQueue.coverage.needsSecondReview ? 'text-[#ffc24a]' : 'text-[#2ee0d4]'}`}>{reviewQueue.coverage.eligibleForTraining} eligible</strong>
+              {reviewQueue.coverage.needsSecondReview > 0 && <span className="tiny muted">{reviewQueue.coverage.needsSecondReview} conflict(s) need review</span>}
             </div>
           </div>
           {reviewQueue.queue.length > 0 && (
@@ -1155,7 +1165,7 @@ function Dashboard({
                     <RiskBadge score={item.risk} />
                   </div>
                   <p className="mt-2 text-xs text-[#b7d0d5]">{item.supplier}</p>
-                  <p className="tiny muted mt-1">{item.reviewState === 'needs_evidence' ? 'Needs evidence' : 'Not yet reviewed'}</p>
+                  <p className="tiny muted mt-1">{item.reviewState === 'conflict' ? `Conflicting labels · ${item.reviewCount} decisions` : item.reviewState === 'needs_evidence' ? 'Needs evidence' : 'Not yet reviewed'}</p>
                 </button>
               ))}
             </div>

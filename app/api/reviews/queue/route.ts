@@ -4,7 +4,7 @@ import { env } from 'cloudflare:workers';
 export const dynamic = 'force-dynamic';
 
 type TransactionRecord = { id: string; supplier: string; amount: number; pattern: string; risk_score: number; status: string; reason: string; created_at: string };
-type ReviewRecord = { transaction_id: string; decision: string; created_at: string };
+type ReviewRecord = { transaction_id: string; decision: string; actor_id: string; created_at: string };
 
 function percentage(value: number, total: number) {
   return total ? Number(((value / total) * 100).toFixed(1)) : 0;
@@ -21,7 +21,15 @@ export async function GET(request: Request) {
     ]);
     const transactions = transactionsResult.results ?? [];
     const latestReviewByTransaction = new Map<string, ReviewRecord>();
+    const decisionsByTransaction = new Map<string, Set<string>>();
+    const reviewCounts = new Map<string, number>();
+    const reviewers = new Set<string>();
     for (const review of reviewsResult.results ?? []) {
+      reviewers.add(review.actor_id);
+      reviewCounts.set(review.transaction_id, (reviewCounts.get(review.transaction_id) ?? 0) + 1);
+      const decisions = decisionsByTransaction.get(review.transaction_id) ?? new Set<string>();
+      if (review.decision === 'confirmed_fraud' || review.decision === 'false_positive') decisions.add(review.decision);
+      decisionsByTransaction.set(review.transaction_id, decisions);
       if (!latestReviewByTransaction.has(review.transaction_id)) latestReviewByTransaction.set(review.transaction_id, review);
     }
     const labelled = transactions.filter((transaction) => {
@@ -31,21 +39,25 @@ export async function GET(request: Request) {
     const confirmedFraud = labelled.filter((transaction) => latestReviewByTransaction.get(transaction.id)?.decision === 'confirmed_fraud').length;
     const falsePositive = labelled.length - confirmedFraud;
     const needsEvidence = transactions.filter((transaction) => latestReviewByTransaction.get(transaction.id)?.decision === 'needs_evidence').length;
+    const conflictingCases = transactions.filter((transaction) => (decisionsByTransaction.get(transaction.id)?.size ?? 0) > 1).length;
+    const eligibleForTraining = Math.max(0, labelled.length - conflictingCases);
     const queue = transactions
       .filter((transaction) => {
         const decision = latestReviewByTransaction.get(transaction.id)?.decision;
-        return decision !== 'confirmed_fraud' && decision !== 'false_positive';
+        const conflicting = (decisionsByTransaction.get(transaction.id)?.size ?? 0) > 1;
+        return conflicting || (decision !== 'confirmed_fraud' && decision !== 'false_positive');
       })
       .sort((left, right) => {
         const leftDecision = latestReviewByTransaction.get(left.id)?.decision;
         const rightDecision = latestReviewByTransaction.get(right.id)?.decision;
-        const leftPriority = leftDecision === 'needs_evidence' ? 1 : 0;
-        const rightPriority = rightDecision === 'needs_evidence' ? 1 : 0;
+        const leftPriority = (decisionsByTransaction.get(left.id)?.size ?? 0) > 1 ? 2 : leftDecision === 'needs_evidence' ? 1 : 0;
+        const rightPriority = (decisionsByTransaction.get(right.id)?.size ?? 0) > 1 ? 2 : rightDecision === 'needs_evidence' ? 1 : 0;
         return leftPriority - rightPriority || right.risk_score - left.risk_score || left.created_at.localeCompare(right.created_at);
       })
       .slice(0, 12)
       .map((transaction) => {
         const review = latestReviewByTransaction.get(transaction.id);
+        const conflicting = (decisionsByTransaction.get(transaction.id)?.size ?? 0) > 1;
         return {
           id: transaction.id,
           supplier: transaction.supplier,
@@ -55,7 +67,8 @@ export async function GET(request: Request) {
           status: transaction.status,
           reason: transaction.reason,
           createdAt: transaction.created_at,
-          reviewState: review?.decision === 'needs_evidence' ? 'needs_evidence' : 'unreviewed',
+          reviewState: conflicting ? 'conflict' : review?.decision === 'needs_evidence' ? 'needs_evidence' : 'unreviewed',
+          reviewCount: reviewCounts.get(transaction.id) ?? 0,
           priority: transaction.risk_score >= 80 ? 'high' : transaction.risk_score >= 55 ? 'medium' : 'low',
         };
       });
@@ -70,12 +83,16 @@ export async function GET(request: Request) {
         confirmedFraud,
         falsePositive,
         needsEvidence,
+        conflictingCases,
+        eligibleForTraining,
+        needsSecondReview: conflictingCases,
+        reviewerCount: reviewers.size,
         unreviewed: Math.max(0, unreviewed),
         highRiskUnreviewed,
         percentage: percentage(labelled.length, total),
         targetCases: 30,
-        remainingToTarget: Math.max(0, 30 - labelled.length),
-        readyForTraining: labelled.length >= 30 && confirmedFraud > 0 && falsePositive > 0,
+        remainingToTarget: Math.max(0, 30 - eligibleForTraining),
+        readyForTraining: eligibleForTraining >= 30 && confirmedFraud > 0 && falsePositive > 0 && conflictingCases === 0,
       },
     });
   } catch (error) {

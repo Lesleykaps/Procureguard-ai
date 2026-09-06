@@ -124,6 +124,7 @@ async function checkApiFlow() {
   const reviewQueue = await request('/api/reviews/queue', { headers });
   assert(reviewQueue.response.ok && reviewQueue.body?.coverage && Array.isArray(reviewQueue.body?.queue), `Review queue request failed with ${reviewQueue.response.status}.`);
   assert(Number(reviewQueue.body.coverage.labelled) + Number(reviewQueue.body.coverage.unreviewed) + Number(reviewQueue.body.coverage.needsEvidence) === Number(reviewQueue.body.coverage.total), 'Review queue coverage does not reconcile to the transaction total.');
+  assert(Number(reviewQueue.body.coverage.eligibleForTraining) <= Number(reviewQueue.body.coverage.labelled) && Number(reviewQueue.body.coverage.needsSecondReview) === Number(reviewQueue.body.coverage.conflictingCases), 'Review queue quality summary is inconsistent.');
   assert(reviewQueue.body.coverage.remainingToTarget >= 0 && reviewQueue.body.coverage.remainingToTarget <= 30, 'Review queue target coverage is invalid.');
 
   const calibration = await request('/api/calibration', { headers });

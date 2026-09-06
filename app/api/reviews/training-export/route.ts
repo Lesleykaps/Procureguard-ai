@@ -22,18 +22,26 @@ export async function GET(request: Request) {
     ]);
     const transactionsById = new Map((transactionsResult.results ?? []).map((row) => [row.id, row]));
     const latestReviewByTransaction = new Map<string, { decision: string; note: string | null; created_at: string }>();
+    const definitiveDecisionsByTransaction = new Map<string, Set<string>>();
     for (const review of reviewsResult.results ?? []) {
+      if (review.decision === 'confirmed_fraud' || review.decision === 'false_positive') {
+        const decisions = definitiveDecisionsByTransaction.get(review.transaction_id) ?? new Set<string>();
+        decisions.add(review.decision);
+        definitiveDecisionsByTransaction.set(review.transaction_id, decisions);
+      }
       if (!latestReviewByTransaction.has(review.transaction_id)) latestReviewByTransaction.set(review.transaction_id, review);
     }
     const rows: (string | number)[][] = [['transaction_id', 'supplier', 'amount', 'pattern', 'risk_score', 'label_fraud', 'label_source', 'review_note', 'model_features_json', 'transaction_created_at', 'reviewed_at']];
     for (const [transactionId, review] of latestReviewByTransaction.entries()) {
       const transaction = transactionsById.get(transactionId);
       if (!transaction || (review.decision !== 'confirmed_fraud' && review.decision !== 'false_positive')) continue;
+      if ((definitiveDecisionsByTransaction.get(transactionId)?.size ?? 0) > 1) continue;
       const featureVector = transaction.model_features_json ?? JSON.stringify(modelFeatures(transaction.pattern, transaction.amount));
       rows.push([transaction.id, transaction.supplier, transaction.amount, transaction.pattern, transaction.risk_score, review.decision === 'confirmed_fraud' ? 1 : 0, 'human_review', review.note ?? '', featureVector, transaction.created_at, review.created_at]);
     }
     const csv = rows.map((row) => row.map(csvCell).join(',')).join('\n') + '\n';
-    await addAuditEvent(actor.userId, 'training_export', `Training label dataset exported with ${rows.length - 1} adjudicated cases.`);
+    const omittedConflicts = [...definitiveDecisionsByTransaction.values()].filter((decisions) => decisions.size > 1).length;
+    await addAuditEvent(actor.userId, 'training_export', `Training label dataset exported with ${rows.length - 1} adjudicated cases; ${omittedConflicts} conflicting case(s) omitted.`);
     return new Response(csv, { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="procureguard-reviewed-labels-${new Date().toISOString().slice(0, 10)}.csv"`, 'Cache-Control': 'no-store' } });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : 'Training label export unavailable.' }, { status: 503 });
