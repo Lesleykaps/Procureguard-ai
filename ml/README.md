@@ -28,6 +28,6 @@ Admins and Managers can use **Models → Prepare training package** to download 
 pnpm run models:retrain:reviewed -- path/to/procureguard-reviewed-labels.csv
 ```
 
-The command writes `ml/retraining-candidate.json` with a compact logistic-regression candidate and a reviewer-derived threshold proposal. It never replaces the active `model-artifacts.json`; the candidate remains `pending_approval` until it has an independent holdout evaluation and model-governance approval. Aim for at least 30 real labeled cases with both classes, and keep a separate holdout set before making performance claims.
+The command writes `ml/retraining-candidate.json` with a compact logistic-regression candidate, reviewer-derived threshold proposal, and (when enough labels exist) a deterministic stratified holdout evaluation. It never replaces the active `model-artifacts.json`; the candidate remains `pending_approval` until the holdout gate and model-governance approval are complete. Aim for at least 30 real labeled cases with both classes so the holdout is meaningful before making performance claims.
 
 The generated file is a development fixture. Replace it with approved, de-identified data before making claims about production accuracy or false-positive performance.

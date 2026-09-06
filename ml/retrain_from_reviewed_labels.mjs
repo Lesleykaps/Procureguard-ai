@@ -8,6 +8,22 @@ const DEFAULT_OUTPUT = join(process.cwd(), 'ml', 'retraining-candidate.json');
 function clamp(value, min = 0, max = 1) { return Math.max(min, Math.min(max, value)); }
 function sigmoid(value) { return 1 / (1 + Math.exp(-Math.max(-35, Math.min(35, value)))); }
 function dot(left, right) { return left.reduce((sum, value, index) => sum + value * right[index], 0); }
+function stableHash(value) {
+  let hash = 2166136261;
+  for (const character of value) { hash ^= character.codePointAt(0); hash = Math.imul(hash, 16777619); }
+  return hash >>> 0;
+}
+
+function splitRows(rows) {
+  const groups = [rows.filter((row) => row.label === 0), rows.filter((row) => row.label === 1)];
+  if (rows.length < 10 || groups.some((group) => group.length < 2)) return { trainingRows: rows, holdoutRows: [] };
+  const holdoutIds = new Set();
+  groups.forEach((group) => {
+    const holdoutCount = Math.min(group.length - 1, Math.max(1, Math.floor(group.length * 0.2)));
+    group.toSorted((left, right) => stableHash(left.id) - stableHash(right.id)).slice(0, holdoutCount).forEach((row) => holdoutIds.add(row.id));
+  });
+  return { trainingRows: rows.filter((row) => !holdoutIds.has(row.id)), holdoutRows: rows.filter((row) => holdoutIds.has(row.id)) };
+}
 
 function parseCsvLine(line) {
   const values = [];
@@ -118,26 +134,31 @@ if (errors.length) throw new Error(`Cannot train from reviewer labels:\n${errors
 const positiveRows = rows.filter((row) => row.label === 1);
 const negativeRows = rows.filter((row) => row.label === 0);
 if (rows.length < 2 || !positiveRows.length || !negativeRows.length) throw new Error('At least two labeled cases with both fraud and non-fraud classes are required before training a candidate model.');
+const { trainingRows, holdoutRows } = splitRows(rows);
 
-const model = { bias: Math.log(positiveRows.length / negativeRows.length), weights: Array(featureNames.length).fill(0) };
+const trainingPositiveRows = trainingRows.filter((row) => row.label === 1);
+const trainingNegativeRows = trainingRows.filter((row) => row.label === 0);
+const model = { bias: Math.log(trainingPositiveRows.length / trainingNegativeRows.length), weights: Array(featureNames.length).fill(0) };
 for (let epoch = 0; epoch < 400; epoch += 1) {
   const gradient = Array(featureNames.length).fill(0);
   let biasGradient = 0;
-  rows.forEach((row) => {
+  trainingRows.forEach((row) => {
     const error = sigmoid(model.bias + dot(row.x, model.weights)) - row.label;
     model.weights.forEach((_, featureIndex) => { gradient[featureIndex] += error * row.x[featureIndex]; });
     biasGradient += error;
   });
-  model.weights = model.weights.map((weight, featureIndex) => weight - 0.12 * (gradient[featureIndex] / rows.length + 0.01 * weight));
-  model.bias -= 0.12 * biasGradient / rows.length;
+  model.weights = model.weights.map((weight, featureIndex) => weight - 0.12 * (gradient[featureIndex] / trainingRows.length + 0.01 * weight));
+  model.bias -= 0.12 * biasGradient / trainingRows.length;
 }
-const probabilities = rows.map((row) => sigmoid(model.bias + dot(row.x, model.weights)));
-const tuned = chooseThreshold(rows, probabilities);
+const fitProbabilities = trainingRows.map((row) => sigmoid(model.bias + dot(row.x, model.weights)));
+const tuned = chooseThreshold(trainingRows, fitProbabilities);
+const holdoutHasBothClasses = holdoutRows.some((row) => row.label === 1) && holdoutRows.some((row) => row.label === 0);
+const holdoutMetrics = holdoutHasBothClasses ? metrics(holdoutRows, holdoutRows.map((row) => sigmoid(model.bias + dot(row.x, model.weights))), tuned.threshold) : null;
 const candidate = {
   artifactVersion: 'candidate-1.0.0',
   generatedAt: new Date().toISOString(),
   status: 'pending_approval',
-  source: { file: basename(inputPath), rows: rows.length, confirmedFraud: positiveRows.length, falsePositive: negativeRows.length, label: 'human_review' },
+  source: { file: basename(inputPath), rows: rows.length, trainingRows: trainingRows.length, holdoutRows: holdoutRows.length, confirmedFraud: positiveRows.length, falsePositive: negativeRows.length, label: 'human_review' },
   features: featureNames,
   model: {
     runtime: 'logistic_regression',
@@ -146,11 +167,14 @@ const candidate = {
     threshold: Number(tuned.threshold.toFixed(2)),
     riskThreshold: Math.round(tuned.threshold * 100),
     fitMetrics: tuned.metrics,
+    holdoutMetrics,
     thresholdSelection: { objective: 'maximize F2', falsePositiveRateCeiling: TARGET_FALSE_POSITIVE_RATE, selectionData: 'reviewed labels' },
   },
-  note: 'Candidate trained from reviewer labels. These are fit metrics on the labeled export, not independent production performance. Do not activate until a holdout evaluation and model-governance approval are complete.',
+  evaluation: { holdoutAvailable: Boolean(holdoutMetrics), approvalReady: Boolean(holdoutMetrics && holdoutRows.length >= 10), minimumRecommendedHoldoutRows: 10 },
+  note: 'Candidate trained from reviewer labels. Fit metrics use the training partition; holdout metrics are independent only when enough reviewed cases permit a stratified holdout. Do not activate until holdout evaluation and model-governance approval are complete.',
 };
 await writeFile(outputPath, `${JSON.stringify(candidate, null, 2)}\n`, 'utf8');
-console.log(`Created pending candidate from ${rows.length} reviewed labels (${positiveRows.length} fraud, ${negativeRows.length} non-fraud).`);
+console.log(`Created pending candidate from ${rows.length} reviewed labels (${trainingRows.length} training, ${holdoutRows.length} holdout; ${positiveRows.length} fraud, ${negativeRows.length} non-fraud).`);
 console.log(`Candidate threshold: ${candidate.model.riskThreshold}/100 risk score; fit recall ${candidate.model.fitMetrics.recall}%; fit false-positive rate ${candidate.model.fitMetrics.falsePositiveRate}%.`);
+console.log(candidate.model.holdoutMetrics ? `Holdout recall ${candidate.model.holdoutMetrics.recall}%; holdout false-positive rate ${candidate.model.holdoutMetrics.falsePositiveRate}%.` : 'Holdout evaluation unavailable; collect more reviewed cases before governance approval.');
 console.log(`Candidate artifact: ${outputPath}`);
