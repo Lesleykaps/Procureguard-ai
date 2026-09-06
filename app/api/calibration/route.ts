@@ -40,13 +40,16 @@ export async function GET(request: Request) {
     if (!hasPermission(actor.role, 'models:read')) return Response.json({ error: 'Your role cannot view calibration proposals.' }, { status: 403 });
     const [transactionsResult, reviewsResult] = await Promise.all([
       env.DB.prepare(`SELECT id, risk_score FROM procurement_transactions`).all<{ id: string; risk_score: number }>(),
-      env.DB.prepare(`SELECT transaction_id, decision, created_at FROM review_decisions ORDER BY created_at DESC`).all<{ transaction_id: string; decision: string; created_at: string }>(),
+      env.DB.prepare(`SELECT transaction_id, decision, review_type, created_at FROM review_decisions ORDER BY created_at DESC`).all<{ transaction_id: string; decision: string; review_type: string; created_at: string }>(),
     ]);
     const riskByTransaction = new Map((transactionsResult.results ?? []).map((row) => [row.id, row.risk_score]));
     const latestReviewByTransaction = new Map<string, string>();
+    const latestResolutionByTransaction = new Map<string, string>();
     for (const review of reviewsResult.results ?? []) {
       if (!latestReviewByTransaction.has(review.transaction_id)) latestReviewByTransaction.set(review.transaction_id, review.decision);
+      if (review.review_type === 'resolution' && !latestResolutionByTransaction.has(review.transaction_id)) latestResolutionByTransaction.set(review.transaction_id, review.decision);
     }
+    for (const [transactionId, decision] of latestResolutionByTransaction.entries()) latestReviewByTransaction.set(transactionId, decision);
     const labelledCases: LabelledCase[] = [...latestReviewByTransaction.entries()].flatMap(([id, decision]) => {
       const risk = riskByTransaction.get(id);
       return risk !== undefined && (decision === 'confirmed_fraud' || decision === 'false_positive') ? [{ risk, actualFraud: decision === 'confirmed_fraud' }] : [];

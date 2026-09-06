@@ -125,6 +125,20 @@ async function checkApiFlow() {
   assert(reviewQueue.response.ok && reviewQueue.body?.coverage && Array.isArray(reviewQueue.body?.queue), `Review queue request failed with ${reviewQueue.response.status}.`);
   assert(Number(reviewQueue.body.coverage.labelled) + Number(reviewQueue.body.coverage.unreviewed) + Number(reviewQueue.body.coverage.needsEvidence) === Number(reviewQueue.body.coverage.total), 'Review queue coverage does not reconcile to the transaction total.');
   assert(Number(reviewQueue.body.coverage.eligibleForTraining) <= Number(reviewQueue.body.coverage.labelled) && Number(reviewQueue.body.coverage.needsSecondReview) === Number(reviewQueue.body.coverage.conflictingCases), 'Review queue quality summary is inconsistent.');
+  let resolutionStatus = null;
+  if (role === 'Admin' || role === 'Manager') {
+    const conflictFraud = await request('/api/reviews', { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ transactionId: importId, decision: 'confirmed_fraud', note: 'Resolution-flow validation label.' }) });
+    const conflictClear = await request('/api/reviews', { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ transactionId: importId, decision: 'false_positive', note: 'Resolution-flow validation disagreement.' }) });
+    assert(conflictFraud.response.status === 201 && conflictClear.response.status === 201, 'Could not create the resolution-flow conflict fixture.');
+    const conflictedQueue = await request('/api/reviews/queue', { headers });
+    assert(conflictedQueue.response.ok && conflictedQueue.body.coverage.conflictingCases >= 1 && conflictedQueue.body.queue.some((item) => item.id === importId && item.reviewState === 'conflict'), 'Conflicting review labels were not surfaced in the queue.');
+    const conflictsBeforeResolution = conflictedQueue.body.coverage.conflictingCases;
+    const resolution = await request('/api/reviews', { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ transactionId: importId, decision: 'confirmed_fraud', reviewType: 'resolution', note: 'Validation resolution: evidence supports the fraud label.' }) });
+    assert(resolution.response.status === 201 && resolution.body?.review?.review_type === 'resolution', `Review resolution failed with ${resolution.response.status}.`);
+    const resolvedQueue = await request('/api/reviews/queue', { headers });
+    assert(resolvedQueue.response.ok && resolvedQueue.body.coverage.conflictingCases === conflictsBeforeResolution - 1 && !resolvedQueue.body.queue.some((item) => item.id === importId && item.reviewState === 'conflict'), 'Resolved review conflict did not clear training eligibility.');
+    resolutionStatus = resolution.response.status;
+  }
   assert(reviewQueue.body.coverage.remainingToTarget >= 0 && reviewQueue.body.coverage.remainingToTarget <= 30, 'Review queue target coverage is invalid.');
 
   const calibration = await request('/api/calibration', { headers });
@@ -144,7 +158,7 @@ async function checkApiFlow() {
   const audit = await request('/api/audit', { headers });
   assert(audit.response.ok && Array.isArray(audit.body?.events) && audit.body.events.some((event) => event.event_type === 'import' && event.actor_id), `Audit trail did not record the authenticated write actions.`);
 
-  return { role, transactions: transactions.body.transactions.length, scanned: scan.body.scanned, scanDurationMs: scan.body.durationMs, imported: imported.body.imported, reportStatus: reportResponse.status, explanationStatus: explanation.response.status, reviewStatus: reviewDecision.response.status, evaluationStatus: evaluation.response.status, calibrationStatus: calibration.response.status, modelsStatus: models.response.status, monitoringStatus: monitoring.response.status, reviewQueueStatus: reviewQueue.response.status, driftStatus: monitoring.body.monitoring.scoreDistribution.status, usersStatus, auditEvents: audit.body.events.length };
+  return { role, transactions: transactions.body.transactions.length, scanned: scan.body.scanned, scanDurationMs: scan.body.durationMs, imported: imported.body.imported, reportStatus: reportResponse.status, explanationStatus: explanation.response.status, reviewStatus: reviewDecision.response.status, evaluationStatus: evaluation.response.status, calibrationStatus: calibration.response.status, modelsStatus: models.response.status, monitoringStatus: monitoring.response.status, reviewQueueStatus: reviewQueue.response.status, resolutionStatus, driftStatus: monitoring.body.monitoring.scoreDistribution.status, usersStatus, auditEvents: audit.body.events.length };
 }
 
 const artifactResult = checkArtifact();

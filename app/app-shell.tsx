@@ -84,6 +84,7 @@ type ReviewRecord = {
   transaction_id: string;
   actor_id: string;
   decision: 'confirmed_fraud' | 'false_positive' | 'needs_evidence';
+  review_type: 'initial' | 'resolution';
   note: string | null;
   created_at: string;
 };
@@ -942,6 +943,7 @@ export function AppShell({
               selected={selected}
               setView={setView}
               notify={notify}
+              canResolve={role === 'Admin' || role === 'Manager'}
             />
           )}
           {view === 'models' && (
@@ -1470,10 +1472,12 @@ function ExplainView({
   selected,
   setView,
   notify,
+  canResolve,
 }: {
   selected: Txn;
   setView: (view: View) => void;
   notify: (message: string) => void;
+  canResolve: boolean;
 }) {
   const [factors, setFactors] = useState<
     { label: string; value: number; direction: string }[]
@@ -1533,7 +1537,10 @@ function ExplainView({
       active = false;
     };
   }, [selected.id]);
-  async function recordReview(decision: ReviewRecord['decision']) {
+  async function recordReview(
+    decision: ReviewRecord['decision'],
+    reviewType: ReviewRecord['review_type'] = 'initial',
+  ) {
     setIsSubmittingReview(true);
     try {
       const response = await fetch('/api/reviews', {
@@ -1542,6 +1549,7 @@ function ExplainView({
         body: JSON.stringify({
           transactionId: selected.id,
           decision,
+          reviewType,
           note: reviewNote,
         }),
       });
@@ -1583,6 +1591,18 @@ function ExplainView({
     false_positive: 'False positive',
     needs_evidence: 'Needs evidence',
   };
+  const definitiveDecisions = new Set(
+    reviews
+      .filter((review) => review.review_type !== 'resolution')
+      .map((review) => review.decision)
+      .filter(
+        (decision) =>
+          decision === 'confirmed_fraud' || decision === 'false_positive',
+      ),
+  );
+  const hasUnresolvedConflict =
+    !reviews.some((review) => review.review_type === 'resolution') &&
+    definitiveDecisions.size > 1;
   return (
     <>
       <SectionHeader
@@ -1651,10 +1671,52 @@ function ExplainView({
               Record the adjudication so future model evaluation can use real
               reviewer evidence.
             </p>
+            {hasUnresolvedConflict && (
+              <div className="mt-4 rounded-lg border border-[rgba(255,194,74,.35)] bg-[rgba(86,63,20,.2)] p-3">
+                <strong className="text-xs text-[#ffc24a]">
+                  Conflicting labels require a governance resolution
+                </strong>
+                <p className="tiny muted mt-1">
+                  Only a Manager or Admin can record the final decision. Add a
+                  resolution note so the case can re-enter the training set.
+                </p>
+                {canResolve ? (
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <Button
+                      disabled={isSubmittingReview || !reviewNote.trim()}
+                      onClick={() =>
+                        void recordReview('confirmed_fraud', 'resolution')
+                      }
+                      className="bg-[#8d3048] text-[#fff1f3] hover:bg-[#a43d57]"
+                    >
+                      Resolve as fraud
+                    </Button>
+                    <Button
+                      disabled={isSubmittingReview || !reviewNote.trim()}
+                      onClick={() =>
+                        void recordReview('false_positive', 'resolution')
+                      }
+                      variant="outline"
+                      className="border-[rgba(255,194,74,.4)] text-[#ffc24a]"
+                    >
+                      Resolve as false positive
+                    </Button>
+                  </div>
+                ) : (
+                  <p className="tiny muted mt-3">
+                    Ask a Manager or Admin to resolve this case.
+                  </p>
+                )}
+              </div>
+            )}
             <Textarea
               value={reviewNote}
               onChange={(event) => setReviewNote(event.target.value)}
-              placeholder="Optional review note"
+              placeholder={
+                hasUnresolvedConflict
+                  ? 'Required resolution note'
+                  : 'Optional review note'
+              }
               maxLength={1000}
               className="mt-4 min-h-20 border-[rgba(111,166,188,.22)] bg-[#0a2134] text-[#dceff1]"
             />

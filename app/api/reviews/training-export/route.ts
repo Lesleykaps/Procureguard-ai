@@ -18,30 +18,39 @@ export async function GET(request: Request) {
     if (!hasPermission(actor.role, 'models:read')) return Response.json({ error: 'Your role cannot export training labels.' }, { status: 403 });
     const [transactionsResult, reviewsResult] = await Promise.all([
       env.DB.prepare(`SELECT id, supplier, amount, pattern, risk_score, model_features_json, created_at FROM procurement_transactions`).all<{ id: string; supplier: string; amount: number; pattern: string; risk_score: number; model_features_json: string | null; created_at: string }>(),
-      env.DB.prepare(`SELECT transaction_id, decision, note, created_at FROM review_decisions ORDER BY created_at DESC`).all<{ transaction_id: string; decision: string; note: string | null; created_at: string }>(),
+      env.DB.prepare(`SELECT transaction_id, decision, review_type, note, created_at FROM review_decisions ORDER BY created_at DESC`).all<{ transaction_id: string; decision: string; review_type: string; note: string | null; created_at: string }>(),
     ]);
     const transactionsById = new Map((transactionsResult.results ?? []).map((row) => [row.id, row]));
-    const latestReviewByTransaction = new Map<string, { decision: string; note: string | null; created_at: string }>();
-    const definitiveDecisionsByTransaction = new Map<string, Set<string>>();
+    const latestInitialByTransaction = new Map<string, { decision: string; note: string | null; created_at: string }>();
+    const latestResolutionByTransaction = new Map<string, { decision: string; note: string | null; created_at: string }>();
+    const initialDecisionsByTransaction = new Map<string, Set<string>>();
     for (const review of reviewsResult.results ?? []) {
-      if (review.decision === 'confirmed_fraud' || review.decision === 'false_positive') {
-        const decisions = definitiveDecisionsByTransaction.get(review.transaction_id) ?? new Set<string>();
-        decisions.add(review.decision);
-        definitiveDecisionsByTransaction.set(review.transaction_id, decisions);
+      if (review.review_type === 'resolution') {
+        if (!latestResolutionByTransaction.has(review.transaction_id)) latestResolutionByTransaction.set(review.transaction_id, review);
+      } else {
+        if (review.decision === 'confirmed_fraud' || review.decision === 'false_positive') {
+          const decisions = initialDecisionsByTransaction.get(review.transaction_id) ?? new Set<string>();
+          decisions.add(review.decision);
+          initialDecisionsByTransaction.set(review.transaction_id, decisions);
+        }
+        if (!latestInitialByTransaction.has(review.transaction_id)) latestInitialByTransaction.set(review.transaction_id, review);
       }
-      if (!latestReviewByTransaction.has(review.transaction_id)) latestReviewByTransaction.set(review.transaction_id, review);
     }
+    const effectiveReviewByTransaction = new Map<string, { decision: string; note: string | null; created_at: string }>();
+    for (const [transactionId, review] of latestInitialByTransaction.entries()) effectiveReviewByTransaction.set(transactionId, latestResolutionByTransaction.get(transactionId) ?? review);
+    for (const [transactionId, review] of latestResolutionByTransaction.entries()) effectiveReviewByTransaction.set(transactionId, review);
     const rows: (string | number)[][] = [['transaction_id', 'supplier', 'amount', 'pattern', 'risk_score', 'label_fraud', 'label_source', 'review_note', 'model_features_json', 'transaction_created_at', 'reviewed_at']];
-    for (const [transactionId, review] of latestReviewByTransaction.entries()) {
+    for (const [transactionId, review] of effectiveReviewByTransaction.entries()) {
       const transaction = transactionsById.get(transactionId);
       if (!transaction || (review.decision !== 'confirmed_fraud' && review.decision !== 'false_positive')) continue;
-      if ((definitiveDecisionsByTransaction.get(transactionId)?.size ?? 0) > 1) continue;
+      if ((initialDecisionsByTransaction.get(transactionId)?.size ?? 0) > 1 && !latestResolutionByTransaction.has(transactionId)) continue;
       const featureVector = transaction.model_features_json ?? JSON.stringify(modelFeatures(transaction.pattern, transaction.amount));
       rows.push([transaction.id, transaction.supplier, transaction.amount, transaction.pattern, transaction.risk_score, review.decision === 'confirmed_fraud' ? 1 : 0, 'human_review', review.note ?? '', featureVector, transaction.created_at, review.created_at]);
     }
     const csv = rows.map((row) => row.map(csvCell).join(',')).join('\n') + '\n';
-    const omittedConflicts = [...definitiveDecisionsByTransaction.values()].filter((decisions) => decisions.size > 1).length;
-    await addAuditEvent(actor.userId, 'training_export', `Training label dataset exported with ${rows.length - 1} adjudicated cases; ${omittedConflicts} conflicting case(s) omitted.`);
+    const omittedConflicts = [...initialDecisionsByTransaction.entries()].filter(([transactionId, decisions]) => decisions.size > 1 && !latestResolutionByTransaction.has(transactionId)).length;
+    const resolvedConflicts = [...initialDecisionsByTransaction.entries()].filter(([transactionId, decisions]) => decisions.size > 1 && latestResolutionByTransaction.has(transactionId)).length;
+    await addAuditEvent(actor.userId, 'training_export', `Training label dataset exported with ${rows.length - 1} adjudicated cases; ${omittedConflicts} unresolved conflict(s) omitted and ${resolvedConflicts} resolved conflict(s) included.`);
     return new Response(csv, { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="procureguard-reviewed-labels-${new Date().toISOString().slice(0, 10)}.csv"`, 'Cache-Control': 'no-store' } });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : 'Training label export unavailable.' }, { status: 503 });

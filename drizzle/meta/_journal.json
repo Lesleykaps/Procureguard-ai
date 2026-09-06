@@ -43,6 +43,13 @@
       "when": 1788703913166,
       "tag": "0005_strange_gressill",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1788712843013,
+      "tag": "0006_neat_johnny_blaze",
+      "breakpoints": true
     }
   ]
 }

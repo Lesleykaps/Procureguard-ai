@@ -1,0 +1,1 @@
+ALTER TABLE `review_decisions` ADD `review_type` text DEFAULT 'initial' NOT NULL;

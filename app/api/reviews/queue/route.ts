@@ -4,7 +4,7 @@ import { env } from 'cloudflare:workers';
 export const dynamic = 'force-dynamic';
 
 type TransactionRecord = { id: string; supplier: string; amount: number; pattern: string; risk_score: number; status: string; reason: string; created_at: string };
-type ReviewRecord = { transaction_id: string; decision: string; actor_id: string; created_at: string };
+type ReviewRecord = { transaction_id: string; decision: string; review_type: string; actor_id: string; created_at: string };
 
 function percentage(value: number, total: number) {
   return total ? Number(((value / total) * 100).toFixed(1)) : 0;
@@ -17,47 +17,61 @@ export async function GET(request: Request) {
     if (!hasPermission(actor.role, 'transactions:read')) return Response.json({ error: 'Your role cannot view the review queue.' }, { status: 403 });
     const [transactionsResult, reviewsResult] = await Promise.all([
       env.DB.prepare(`SELECT id, supplier, amount, pattern, risk_score, status, reason, created_at FROM procurement_transactions`).all<TransactionRecord>(),
-      env.DB.prepare(`SELECT transaction_id, decision, created_at FROM review_decisions ORDER BY created_at DESC`).all<ReviewRecord>(),
+      env.DB.prepare(`SELECT transaction_id, decision, review_type, actor_id, created_at FROM review_decisions ORDER BY created_at DESC`).all<ReviewRecord>(),
     ]);
     const transactions = transactionsResult.results ?? [];
-    const latestReviewByTransaction = new Map<string, ReviewRecord>();
-    const decisionsByTransaction = new Map<string, Set<string>>();
+    const latestInitialByTransaction = new Map<string, ReviewRecord>();
+    const latestResolutionByTransaction = new Map<string, ReviewRecord>();
+    const initialDecisionsByTransaction = new Map<string, Set<string>>();
     const reviewCounts = new Map<string, number>();
     const reviewers = new Set<string>();
     for (const review of reviewsResult.results ?? []) {
       reviewers.add(review.actor_id);
       reviewCounts.set(review.transaction_id, (reviewCounts.get(review.transaction_id) ?? 0) + 1);
-      const decisions = decisionsByTransaction.get(review.transaction_id) ?? new Set<string>();
-      if (review.decision === 'confirmed_fraud' || review.decision === 'false_positive') decisions.add(review.decision);
-      decisionsByTransaction.set(review.transaction_id, decisions);
-      if (!latestReviewByTransaction.has(review.transaction_id)) latestReviewByTransaction.set(review.transaction_id, review);
+      if (review.review_type === 'resolution') {
+        if (!latestResolutionByTransaction.has(review.transaction_id)) latestResolutionByTransaction.set(review.transaction_id, review);
+      } else {
+        if (review.decision === 'confirmed_fraud' || review.decision === 'false_positive') {
+          const decisions = initialDecisionsByTransaction.get(review.transaction_id) ?? new Set<string>();
+          decisions.add(review.decision);
+          initialDecisionsByTransaction.set(review.transaction_id, decisions);
+        }
+        if (!latestInitialByTransaction.has(review.transaction_id)) latestInitialByTransaction.set(review.transaction_id, review);
+      }
+    }
+    const effectiveReviewByTransaction = new Map<string, ReviewRecord>();
+    for (const transaction of transactions) {
+      const effective = latestResolutionByTransaction.get(transaction.id) ?? latestInitialByTransaction.get(transaction.id);
+      if (effective) effectiveReviewByTransaction.set(transaction.id, effective);
     }
     const labelled = transactions.filter((transaction) => {
-      const decision = latestReviewByTransaction.get(transaction.id)?.decision;
+      const decision = effectiveReviewByTransaction.get(transaction.id)?.decision;
       return decision === 'confirmed_fraud' || decision === 'false_positive';
     });
-    const confirmedFraud = labelled.filter((transaction) => latestReviewByTransaction.get(transaction.id)?.decision === 'confirmed_fraud').length;
+    const confirmedFraud = labelled.filter((transaction) => effectiveReviewByTransaction.get(transaction.id)?.decision === 'confirmed_fraud').length;
     const falsePositive = labelled.length - confirmedFraud;
-    const needsEvidence = transactions.filter((transaction) => latestReviewByTransaction.get(transaction.id)?.decision === 'needs_evidence').length;
-    const conflictingCases = transactions.filter((transaction) => (decisionsByTransaction.get(transaction.id)?.size ?? 0) > 1).length;
+    const needsEvidence = transactions.filter((transaction) => effectiveReviewByTransaction.get(transaction.id)?.decision === 'needs_evidence').length;
+    const conflictingCases = transactions.filter((transaction) => (initialDecisionsByTransaction.get(transaction.id)?.size ?? 0) > 1 && !latestResolutionByTransaction.has(transaction.id)).length;
     const eligibleForTraining = Math.max(0, labelled.length - conflictingCases);
     const queue = transactions
       .filter((transaction) => {
-        const decision = latestReviewByTransaction.get(transaction.id)?.decision;
-        const conflicting = (decisionsByTransaction.get(transaction.id)?.size ?? 0) > 1;
+        const decision = effectiveReviewByTransaction.get(transaction.id)?.decision;
+        const conflicting = (initialDecisionsByTransaction.get(transaction.id)?.size ?? 0) > 1 && !latestResolutionByTransaction.has(transaction.id);
         return conflicting || (decision !== 'confirmed_fraud' && decision !== 'false_positive');
       })
       .sort((left, right) => {
-        const leftDecision = latestReviewByTransaction.get(left.id)?.decision;
-        const rightDecision = latestReviewByTransaction.get(right.id)?.decision;
-        const leftPriority = (decisionsByTransaction.get(left.id)?.size ?? 0) > 1 ? 2 : leftDecision === 'needs_evidence' ? 1 : 0;
-        const rightPriority = (decisionsByTransaction.get(right.id)?.size ?? 0) > 1 ? 2 : rightDecision === 'needs_evidence' ? 1 : 0;
-        return leftPriority - rightPriority || right.risk_score - left.risk_score || left.created_at.localeCompare(right.created_at);
+        const leftDecision = effectiveReviewByTransaction.get(left.id)?.decision;
+        const rightDecision = effectiveReviewByTransaction.get(right.id)?.decision;
+        const leftConflict = (initialDecisionsByTransaction.get(left.id)?.size ?? 0) > 1 && !latestResolutionByTransaction.has(left.id);
+        const rightConflict = (initialDecisionsByTransaction.get(right.id)?.size ?? 0) > 1 && !latestResolutionByTransaction.has(right.id);
+        const leftPriority = leftConflict ? 2 : leftDecision === 'needs_evidence' ? 1 : 0;
+        const rightPriority = rightConflict ? 2 : rightDecision === 'needs_evidence' ? 1 : 0;
+        return rightPriority - leftPriority || right.risk_score - left.risk_score || left.created_at.localeCompare(right.created_at);
       })
       .slice(0, 12)
       .map((transaction) => {
-        const review = latestReviewByTransaction.get(transaction.id);
-        const conflicting = (decisionsByTransaction.get(transaction.id)?.size ?? 0) > 1;
+        const review = effectiveReviewByTransaction.get(transaction.id);
+        const conflicting = (initialDecisionsByTransaction.get(transaction.id)?.size ?? 0) > 1 && !latestResolutionByTransaction.has(transaction.id);
         return {
           id: transaction.id,
           supplier: transaction.supplier,

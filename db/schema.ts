@@ -77,6 +77,7 @@ export const reviewDecisions = sqliteTable('review_decisions', {
   transactionId: text('transaction_id').notNull(),
   actorId: text('actor_id').notNull(),
   decision: text('decision').notNull(),
+  reviewType: text('review_type').notNull().default('initial'),
   note: text('note'),
   createdAt: text('created_at').notNull(),
 }, (table) => ({
