@@ -54,3 +54,16 @@ export const modelSnapshots = sqliteTable('model_snapshots', {
   isApproved: integer('is_approved', { mode: 'boolean' }).notNull(),
   createdAt: text('created_at').notNull(),
 });
+
+export const scanRuns = sqliteTable('scan_runs', {
+  id: text('id').primaryKey(),
+  actorId: text('actor_id'),
+  recordsScanned: integer('records_scanned').notNull(),
+  flaggedCount: integer('flagged_count').notNull(),
+  meanRisk: real('mean_risk').notNull(),
+  maxRisk: integer('max_risk').notNull(),
+  durationMs: integer('duration_ms').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => ({
+  createdAtIdx: index('idx_scan_runs_created_at').on(table.createdAt),
+}));

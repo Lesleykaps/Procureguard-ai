@@ -51,6 +51,7 @@ type Txn = {
   reason: string;
   date: string;
 };
+type MonitoringSummary = { recordsScanned: number; flaggedCount: number; meanRisk: number; maxRisk: number; durationMs: number; createdAt: string };
 
 const navItems: { key: View; label: string; icon: typeof LayoutDashboard }[] = [
   { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -129,6 +130,8 @@ export function AppShell({ authenticatedUser, signOutPath }: { authenticatedUser
   const [reportReady, setReportReady] = useState(false);
   const [modelAccuracy, setModelAccuracy] = useState('96.4%');
   const [modelFalsePositiveRate, setModelFalsePositiveRate] = useState('7.8%');
+  const [detectionLatency, setDetectionLatency] = useState('—');
+  const [monitoringSummary, setMonitoringSummary] = useState<MonitoringSummary | null>(null);
   const [liveAudit, setLiveAudit] = useState(auditEvents as string[][]);
   const fileRef = useRef<HTMLInputElement>(null);
   const selected = transactions.find((item) => item.id === selectedId) ?? transactions[0] ?? seedTransactions[0];
@@ -144,11 +147,12 @@ export function AppShell({ authenticatedUser, signOutPath }: { authenticatedUser
     let active = true;
     async function loadLiveData() {
       try {
-        const [transactionsResponse, auditResponse, modelsResponse, sessionResponse] = await Promise.all([
+        const [transactionsResponse, auditResponse, modelsResponse, sessionResponse, monitoringResponse] = await Promise.all([
           fetch('/api/transactions', { cache: 'no-store' }),
           fetch('/api/audit', { cache: 'no-store' }),
           fetch('/api/models', { cache: 'no-store' }),
           fetch('/api/session', { cache: 'no-store' }),
+          fetch('/api/monitoring', { cache: 'no-store' }),
         ]);
         const transactionPayload = await transactionsResponse.json() as { transactions?: Txn[] };
         if (active && transactionsResponse.ok && transactionPayload.transactions?.length) setTransactions(transactionPayload.transactions);
@@ -161,6 +165,12 @@ export function AppShell({ authenticatedUser, signOutPath }: { authenticatedUser
         }
         const sessionPayload = await sessionResponse.json() as { user?: { role?: Role } };
         if (active && sessionResponse.ok && sessionPayload.user?.role) setRole(sessionPayload.user.role);
+        const monitoringPayload = await monitoringResponse.json() as { monitoring?: { latestScan?: { records_scanned: number; flagged_count: number; mean_risk: number; max_risk: number; duration_ms: number; created_at: string } | null } };
+        const latestScan = monitoringPayload.monitoring?.latestScan;
+        if (active && monitoringResponse.ok && latestScan) {
+          setDetectionLatency(`${Math.max(1, Math.round(latestScan.duration_ms / 1000))}s`);
+          setMonitoringSummary({ recordsScanned: latestScan.records_scanned, flaggedCount: latestScan.flagged_count, meanRisk: latestScan.mean_risk, maxRisk: latestScan.max_risk, durationMs: latestScan.duration_ms, createdAt: latestScan.created_at });
+        }
       } catch {
         // The seeded client view remains usable while the local or hosted data service is unavailable.
       }
@@ -180,8 +190,11 @@ export function AppShell({ authenticatedUser, signOutPath }: { authenticatedUser
     notify('Scan started — evaluating the latest procurement batch.');
     try {
       const response = await fetch('/api/scan', { method: 'POST' });
-      const payload = await response.json() as { scanned?: number; flagged?: number; error?: string };
+      const payload = await response.json() as { scanned?: number; flagged?: number; durationMs?: number; meanRisk?: number; maxRisk?: number; error?: string };
       if (!response.ok) throw new Error(payload.error ?? 'Scan unavailable');
+      const scanDuration = payload.durationMs ?? 0;
+      setDetectionLatency(`${Math.max(1, Math.round(scanDuration / 1000))}s`);
+      setMonitoringSummary({ recordsScanned: payload.scanned ?? 0, flaggedCount: payload.flagged ?? 0, meanRisk: payload.meanRisk ?? 0, maxRisk: payload.maxRisk ?? 0, durationMs: scanDuration, createdAt: new Date().toISOString() });
       const refreshed = await fetch('/api/transactions', { cache: 'no-store' });
       const refreshedPayload = await refreshed.json() as { transactions?: Txn[] };
       if (refreshed.ok && refreshedPayload.transactions?.length) setTransactions(refreshedPayload.transactions);
@@ -251,7 +264,7 @@ export function AppShell({ authenticatedUser, signOutPath }: { authenticatedUser
 
       <main className="content">
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2"><span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#0f3447] text-[#23ddd2]"><UserRound size={14} /></span><span className="text-xs text-[#a1bbc3]">Signed in as <strong className="text-[#e7f5f7]">{userName}</strong></span><Badge variant="outline" className="border-[#1a827f] text-[#2ee0d4]">{role}</Badge></div><a href={signOutPath} className="tiny muted hover:text-[#2ee0d4]">Sign out</a></div>
-        {view === 'dashboard' && <Dashboard transactions={transactions} modelAccuracy={modelAccuracy} modelFalsePositiveRate={modelFalsePositiveRate} setView={setView} setSelectedId={setSelectedId} runScan={runScan} canScan={canScan} />}
+        {view === 'dashboard' && <Dashboard transactions={transactions} modelAccuracy={modelAccuracy} modelFalsePositiveRate={modelFalsePositiveRate} detectionLatency={detectionLatency} monitoringSummary={monitoringSummary} setView={setView} setSelectedId={setSelectedId} runScan={runScan} canScan={canScan} />}
         {view === 'transactions' && <TransactionsView transactions={visibleTransactions} onUpload={() => fileRef.current?.click()} updateStatus={updateStatus} setSelectedId={(id) => { setSelectedId(id); setView('explain'); }} canImport={canImport} />}
         {view === 'alerts' && <AlertsView alerts={visibleAlerts} filter={alertFilter} setFilter={setAlertFilter} setSelectedId={(id) => { setSelectedId(id); setView('explain'); }} updateStatus={updateStatus} canReview={canReview} />}
         {view === 'explain' && <ExplainView selected={selected} setView={setView} />}
@@ -265,12 +278,13 @@ export function AppShell({ authenticatedUser, signOutPath }: { authenticatedUser
   </div>;
 }
 
-function Dashboard({ transactions, modelAccuracy, modelFalsePositiveRate, setView, setSelectedId, runScan, canScan }: { transactions: Txn[]; modelAccuracy: string; modelFalsePositiveRate: string; setView: (view: View) => void; setSelectedId: (id: string) => void; runScan: () => void; canScan: boolean }) {
+function Dashboard({ transactions, modelAccuracy, modelFalsePositiveRate, detectionLatency, monitoringSummary, setView, setSelectedId, runScan, canScan }: { transactions: Txn[]; modelAccuracy: string; modelFalsePositiveRate: string; detectionLatency: string; monitoringSummary: MonitoringSummary | null; setView: (view: View) => void; setSelectedId: (id: string) => void; runScan: () => void; canScan: boolean }) {
   const highRisk = transactions.filter((item) => item.risk >= 80);
   const openHighRisk = highRisk.filter((item) => item.status === 'Open').length;
   return <>
     <SectionHeader eyebrow="Live risk intelligence" title="Command dashboard" subtitle="A clear view of procurement risk, model health, and the cases that need attention first." action={<Button onClick={runScan} disabled={!canScan} variant="outline" className="h-9 border-[rgba(24,216,207,.4)] bg-[#0c2638] text-[#28ded4] hover:bg-[#10384c]"><RefreshCw size={14} /> Refresh intelligence</Button>} />
-    <div className="metric-grid"><MetricCard label="High-risk alerts" value={String(openHighRisk)} note={<><strong>{highRisk.length}</strong> high-risk records tracked</>} icon={<AlertTriangle size={14} className="text-[#ff5877]" />} tone="red" /><MetricCard label="Detection latency" value="38s" note={<>Target: <strong>under 60s</strong></>} icon={<Clock3 size={14} className="text-[#2edcd1]" />} /><MetricCard label="False positive rate" value={modelFalsePositiveRate} note={<>Objective: <strong>below 10%</strong></>} icon={<Gauge size={14} className="text-[#ffc24a]" />} tone="orange" /><MetricCard label="Model accuracy" value={modelAccuracy} note={<><strong>XGBoost</strong> test split</>} icon={<BarChart3 size={14} className="text-[#2edcd1]" />} /></div>
+    <div className="metric-grid"><MetricCard label="High-risk alerts" value={String(openHighRisk)} note={<><strong>{highRisk.length}</strong> high-risk records tracked</>} icon={<AlertTriangle size={14} className="text-[#ff5877]" />} tone="red" /><MetricCard label="Detection latency" value={detectionLatency} note={<>Target: <strong>under 60s</strong></>} icon={<Clock3 size={14} className="text-[#2edcd1]" />} /><MetricCard label="False positive rate" value={modelFalsePositiveRate} note={<>Objective: <strong>below 10%</strong></>} icon={<Gauge size={14} className="text-[#ffc24a]" />} tone="orange" /><MetricCard label="Model accuracy" value={modelAccuracy} note={<><strong>XGBoost</strong> test split</>} icon={<BarChart3 size={14} className="text-[#2edcd1]" />} /></div>
+    <section className="section-card mt-4 flex flex-wrap items-center justify-between gap-4 p-4"><div className="flex items-center gap-3"><Activity size={18} className="text-[#24d9c9]" /><div><p className="eyebrow">Operational telemetry</p><h2 className="mt-1 text-sm font-semibold">{monitoringSummary ? 'Latest scan health recorded' : 'Waiting for the first recorded scan'}</h2><p className="tiny muted mt-1">{monitoringSummary ? `${monitoringSummary.recordsScanned} records processed · ${monitoringSummary.flaggedCount} flagged · mean risk ${monitoringSummary.meanRisk}% · peak ${monitoringSummary.maxRisk}%` : 'Run a scan to begin tracking live latency and score-distribution health.'}</p></div></div><div className="text-right"><div className="tiny muted">Last run</div><strong className="text-xs text-[#dff7f7]">{monitoringSummary ? new Date(monitoringSummary.createdAt).toLocaleString('en', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—'}</strong></div></section>
     <div className="dashboard-grid"><section className="section-card map-card"><div className="card-heading"><div><p>Live risk intelligence</p><h2>Procurement risk map</h2></div><Badge className="bg-[#0b756f] text-[#79fff0]">Live</Badge></div><div className="map-stage"><div className="map-core" /><span className="map-label orange" style={{ left: '17%', top: '24%' }}>Invoice split</span><span className="map-label red" style={{ right: '13%', top: '28%' }}>Single bidder</span><span className="map-label red" style={{ left: '22%', bottom: '22%' }}>Overbilling</span><span className="map-label green" style={{ right: '17%', bottom: '20%' }}>Vendor conflict</span><div className="absolute bottom-3 left-3 flex items-center gap-4 text-[10px] text-[#7898a7]"><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-[#ff4c6d]" />High risk</span><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-[#ffbe45]" />Medium</span><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-[#22d8c2]" />Low</span></div></div></section><section className="section-card priority-card"><div className="card-heading"><div><p>Immediate action</p><h2>Priority alerts</h2></div><button className="action-link" onClick={() => setView('alerts')}>View all <ArrowUpRight className="inline" size={13} /></button></div>{highRisk.slice(0, 3).map((item) => <div className="alert-item" key={item.id}><div className="alert-row"><RiskBadge score={item.risk} /><span className="mono text-[11px] text-[#a6c0c7]">{item.amount}</span></div><h3>{item.id} · {item.supplier}</h3><p>{item.reason}</p><button className="action-link mt-3" onClick={() => { setSelectedId(item.id); setView('explain'); }}>Investigate <ChevronRight className="inline" size={13} /></button></div>)}</section></div>
   </>;
 }

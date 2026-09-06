@@ -46,6 +46,12 @@ async function checkApiFlow() {
   const scan = await request('/api/scan', { method: 'POST', headers });
   assert(scan.response.ok && scan.body?.scanned >= transactions.body.transactions.length, `Scan request failed with ${scan.response.status}.`);
 
+  const monitoring = await request('/api/monitoring', { headers });
+  assert(monitoring.response.ok && monitoring.body?.monitoring?.latestScan, `Operational monitoring request failed with ${monitoring.response.status}.`);
+  assert(monitoring.body.monitoring.latestScan.records_scanned === scan.body.scanned, 'Monitoring telemetry does not match the completed scan.');
+  assert(Number(monitoring.body.monitoring.latestScan.duration_ms) >= 0, 'Monitoring telemetry returned an invalid scan duration.');
+  assert(Number(monitoring.body.monitoring.transactionTotals?.total) >= transactions.body.transactions.length, 'Monitoring totals returned fewer transactions than the transaction API.');
+
   const reviewTarget = transactions.body.transactions[0].id;
   const review = await request('/api/transactions', { method: 'PATCH', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ id: reviewTarget, status: 'Reviewed' }) });
   assert(review.response.ok && review.body?.updated, `Review update failed with ${review.response.status}.`);
@@ -72,7 +78,7 @@ async function checkApiFlow() {
   const audit = await request('/api/audit', { headers });
   assert(audit.response.ok && Array.isArray(audit.body?.events) && audit.body.events.some((event) => event.event_type === 'import' && event.actor_id), `Audit trail did not record the authenticated write actions.`);
 
-  return { role, transactions: transactions.body.transactions.length, scanned: scan.body.scanned, imported: imported.body.imported, explanationStatus: explanation.response.status, modelsStatus: models.response.status, auditEvents: audit.body.events.length };
+  return { role, transactions: transactions.body.transactions.length, scanned: scan.body.scanned, scanDurationMs: scan.body.durationMs, imported: imported.body.imported, explanationStatus: explanation.response.status, modelsStatus: models.response.status, monitoringStatus: monitoring.response.status, auditEvents: audit.body.events.length };
 }
 
 const artifactResult = checkArtifact();
