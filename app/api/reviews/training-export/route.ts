@@ -1,6 +1,5 @@
-import { getAuthenticatedActor, hasPermission } from '../../../../lib/procurement-db';
+import { addAuditEvent, getAuthenticatedActor, hasPermission, modelFeatures } from '../../../../lib/procurement-db';
 import { env } from 'cloudflare:workers';
-import { addAuditEvent } from '../../../../lib/procurement-db';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,7 +29,8 @@ export async function GET(request: Request) {
     for (const [transactionId, review] of latestReviewByTransaction.entries()) {
       const transaction = transactionsById.get(transactionId);
       if (!transaction || (review.decision !== 'confirmed_fraud' && review.decision !== 'false_positive')) continue;
-      rows.push([transaction.id, transaction.supplier, transaction.amount, transaction.pattern, transaction.risk_score, review.decision === 'confirmed_fraud' ? 1 : 0, 'human_review', review.note ?? '', transaction.model_features_json ?? '', transaction.created_at, review.created_at]);
+      const featureVector = transaction.model_features_json ?? JSON.stringify(modelFeatures(transaction.pattern, transaction.amount));
+      rows.push([transaction.id, transaction.supplier, transaction.amount, transaction.pattern, transaction.risk_score, review.decision === 'confirmed_fraud' ? 1 : 0, 'human_review', review.note ?? '', featureVector, transaction.created_at, review.created_at]);
     }
     const csv = rows.map((row) => row.map(csvCell).join(',')).join('\n') + '\n';
     await addAuditEvent(actor.userId, 'training_export', `Training label dataset exported with ${rows.length - 1} adjudicated cases.`);

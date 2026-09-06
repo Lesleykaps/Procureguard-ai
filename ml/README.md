@@ -20,4 +20,14 @@ pnpm run models:train
 
 The resulting `model-artifacts.json` records the feature set, SMOTE row counts, test metrics, confusion matrices, and model feature importance used by the model registry view.
 
+## Reviewer-label retraining handoff
+
+Admins and Managers can use **Models → Prepare training package** to download the latest eligible human review labels. A local candidate can then be trained with:
+
+```text
+pnpm run models:retrain:reviewed -- path/to/procureguard-reviewed-labels.csv
+```
+
+The command writes `ml/retraining-candidate.json` with a compact logistic-regression candidate and a reviewer-derived threshold proposal. It never replaces the active `model-artifacts.json`; the candidate remains `pending_approval` until it has an independent holdout evaluation and model-governance approval. Aim for at least 30 real labeled cases with both classes, and keep a separate holdout set before making performance claims.
+
 The generated file is a development fixture. Replace it with approved, de-identified data before making claims about production accuracy or false-positive performance.
