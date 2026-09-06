@@ -77,8 +77,8 @@ export function displayDate(isoDate: string) {
   return new Intl.DateTimeFormat('en', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(isoDate));
 }
 
-export function scoreTransaction(pattern: string, amount: number, storedFeatures?: ModelFeatures) {
-  return modelScore(pattern, amount, storedFeatures).score;
+export async function scoreTransaction(pattern: string, amount: number, storedFeatures?: ModelFeatures) {
+  return (await modelScore(pattern, amount, storedFeatures)).score;
 }
 
 function clamp(value: number) { return Math.max(0, Math.min(1, value)); }
@@ -90,8 +90,6 @@ type RuntimeModel = { name: string; runtime: string; parameters: { bias?: number
 type ModelFeatures = number[];
 type FeatureSource = Record<string, string | undefined>;
 
-const runtimeModels = trainedArtifact.models as unknown as RuntimeModel[];
-const runtimeModelByRuntime = new Map(runtimeModels.map((model) => [model.runtime, model]));
 const runtimeFeatureNames = trainedArtifact.features as unknown as string[];
 
 function numberFrom(source: FeatureSource, key: string, fallback: number) {
@@ -158,20 +156,59 @@ function probabilityForModel(features: ModelFeatures, model: RuntimeModel) {
   return sigmoid(raw);
 }
 
-function modelProbabilities(features: ModelFeatures) {
-  const xgboostProbability = probabilityForModel(features, runtimeModelByRuntime.get('gradient_boosted_trees')!);
-  const forestProbability = probabilityForModel(features, runtimeModelByRuntime.get('random_forest')!);
-  const logisticProbability = probabilityForModel(features, runtimeModelByRuntime.get('logistic_regression')!);
-  const weights = trainedArtifact.ensemble.weights;
+type ActiveArtifact = {
+  features: string[];
+  models: RuntimeModel[];
+  ensemble: { weights: { xgboost: number; randomForest: number; logisticRegression: number }; threshold: number };
+};
+
+function candidateToArtifact(candidate: { features?: string[]; model?: { runtime?: string; bias?: number; weights?: number[]; threshold?: number } }): ActiveArtifact | null {
+  if (candidate.model?.runtime !== 'logistic_regression' || !Array.isArray(candidate.model.weights) || !Number.isFinite(candidate.model.bias) || !Number.isFinite(candidate.model.threshold)) return null;
+  return {
+    features: candidate.features ?? runtimeFeatureNames,
+    models: [{ name: 'Reviewer-trained Logistic Regression', runtime: 'logistic_regression', parameters: { bias: candidate.model.bias!, weights: candidate.model.weights } }],
+    ensemble: { weights: { xgboost: 0, randomForest: 0, logisticRegression: 1 }, threshold: candidate.model.threshold! },
+  };
+}
+
+function parseActiveArtifact(value: string | null): ActiveArtifact {
+  if (!value) return trainedArtifact as unknown as ActiveArtifact;
+  try {
+    const parsed = JSON.parse(value) as { models?: RuntimeModel[]; ensemble?: ActiveArtifact['ensemble']; features?: string[]; model?: unknown };
+    if (Array.isArray(parsed.models) && parsed.ensemble && Array.isArray(parsed.features)) return parsed as ActiveArtifact;
+    return candidateToArtifact(parsed as never) ?? (trainedArtifact as unknown as ActiveArtifact);
+  } catch { return trainedArtifact as unknown as ActiveArtifact; }
+}
+
+export async function ensureBaselineModelRelease() {
+  const now = new Date().toISOString();
+  await env.DB.prepare(`INSERT OR IGNORE INTO model_releases (id, name, version, status, artifact_json, metrics_json, source, submitted_by, approved_by, approved_at, activated_by, activated_at, decision_note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind('release-synthetic-v1', 'Synthetic ensemble baseline', 'synthetic-v1.0.0', 'active', JSON.stringify(trainedArtifact), JSON.stringify(trainedArtifact.ensemble.metrics), 'synthetic_development', 'system', 'system', now, 'system', now, 'Development baseline; not a production-performance claim.', now).run();
+}
+
+export async function activeModelRelease() {
+  await ensureBaselineModelRelease();
+  return env.DB.prepare(`SELECT id, name, version, status, artifact_json, metrics_json, source, activated_at, created_at FROM model_releases WHERE status = 'active' ORDER BY activated_at DESC, created_at DESC LIMIT 1`).first<{ id: string; name: string; version: string; status: string; artifact_json: string; metrics_json: string; source: string; activated_at: string | null; created_at: string }>();
+}
+
+function modelProbabilities(features: ModelFeatures, artifact: ActiveArtifact) {
+  const byRuntime = new Map(artifact.models.map((model) => [model.runtime, model]));
+  const xgboost = byRuntime.get('gradient_boosted_trees');
+  const forest = byRuntime.get('random_forest');
+  const logistic = byRuntime.get('logistic_regression');
+  const xgboostProbability = xgboost ? probabilityForModel(features, xgboost) : 0;
+  const forestProbability = forest ? probabilityForModel(features, forest) : 0;
+  const logisticProbability = logistic ? probabilityForModel(features, logistic) : 0;
+  const weights = artifact.ensemble.weights;
   return { xgboost: xgboostProbability, randomForest: forestProbability, logisticRegression: logisticProbability, ensemble: xgboostProbability * weights.xgboost + forestProbability * weights.randomForest + logisticProbability * weights.logisticRegression };
 }
 
-function coalitionProbability(features: ModelFeatures, mask: number) {
+function coalitionProbability(features: ModelFeatures, mask: number, artifact: ActiveArtifact) {
   const coalition = features.map((value, index) => mask & (1 << index) ? value : 0);
-  return modelProbabilities(coalition).ensemble;
+  return modelProbabilities(coalition, artifact).ensemble;
 }
 
-function exactShapley(features: ModelFeatures) {
+function exactShapley(features: ModelFeatures, artifact: ActiveArtifact) {
   const featureCount = features.length;
   const factorial = [1];
   for (let index = 1; index <= featureCount; index += 1) factorial[index] = factorial[index - 1] * index;
@@ -179,7 +216,7 @@ function exactShapley(features: ModelFeatures) {
   const fullMask = (1 << featureCount) - 1;
   const coalitionProbabilities = new Map<number, number>();
   const probabilityForCoalition = (mask: number) => {
-    if (!coalitionProbabilities.has(mask)) coalitionProbabilities.set(mask, coalitionProbability(features, mask));
+    if (!coalitionProbabilities.has(mask)) coalitionProbabilities.set(mask, coalitionProbability(features, mask, artifact));
     return coalitionProbabilities.get(mask)!;
   };
   const baseProbability = probabilityForCoalition(0);
@@ -194,22 +231,24 @@ function exactShapley(features: ModelFeatures) {
   return { values, baseProbability, fullProbability: probabilityForCoalition(fullMask) };
 }
 
-export function modelScore(pattern: string, amount: number, storedFeatures?: ModelFeatures) {
-  const features = storedFeatures?.length === runtimeFeatureNames.length ? storedFeatures : modelFeatures(pattern, amount);
-  const probabilities = modelProbabilities(features);
-  const shap = exactShapley(features);
+export async function modelScore(pattern: string, amount: number, storedFeatures?: ModelFeatures) {
+  const release = await activeModelRelease();
+  const artifact = parseActiveArtifact(release?.artifact_json ?? null);
+  const features = storedFeatures?.length === artifact.features.length ? storedFeatures : modelFeatures(pattern, amount);
+  const probabilities = modelProbabilities(features, artifact);
+  const shap = exactShapley(features, artifact);
   const labels = ['Amount scale', 'Contract ratio', 'Bidder scarcity', 'Bid-window risk', 'Price deviation', 'Duplicate signal', 'Invoice velocity', 'Approval override', 'Domain match', 'Split ratio', 'Supplier youth', 'Related suppliers'];
   const maxAbs = Math.max(...shap.values.map((value) => Math.abs(value)), 0.0001);
   const contributions: FeatureContribution[] = shap.values.map((contribution, index) => ({ label: labels[index], contribution: Number(contribution.toFixed(4)), value: Math.round(Math.abs(contribution) / maxAbs * 100), direction: contribution >= 0 ? 'risk' : 'protective' }));
-  return { score: Math.max(5, Math.min(99, Math.round(probabilities.ensemble * 100))), contributions, models: { xgboost: Math.round(probabilities.xgboost * 100), randomForest: Math.round(probabilities.randomForest * 100), logisticRegression: Math.round(probabilities.logisticRegression * 100) }, baseRisk: Math.round(shap.baseProbability * 100), ensembleProbability: Number(probabilities.ensemble.toFixed(4)), decisionThreshold: trainedArtifact.ensemble.threshold, explanationMethod: 'exact_shapley_enumeration' };
+  return { score: Math.max(5, Math.min(99, Math.round(probabilities.ensemble * 100))), contributions, models: { xgboost: Math.round(probabilities.xgboost * 100), randomForest: Math.round(probabilities.randomForest * 100), logisticRegression: Math.round(probabilities.logisticRegression * 100) }, baseRisk: Math.round(shap.baseProbability * 100), ensembleProbability: Number(probabilities.ensemble.toFixed(4)), decisionThreshold: artifact.ensemble.threshold, explanationMethod: 'exact_shapley_enumeration', release: { id: release?.id ?? 'release-synthetic-v1', name: release?.name ?? 'Synthetic ensemble baseline', version: release?.version ?? 'synthetic-v1.0.0' } };
 }
 
 export async function explainTransaction(id: string) {
   const row = await env.DB.prepare(`SELECT id, supplier, amount, pattern, risk_score, status, reason, model_features_json, created_at FROM procurement_transactions WHERE id = ?`).bind(id).first<TransactionRow>();
   if (!row) return null;
   const storedFeatures = row.model_features_json ? JSON.parse(row.model_features_json) as ModelFeatures : undefined;
-  const scored = modelScore(row.pattern, row.amount, storedFeatures);
-  return { id: row.id, supplier: row.supplier, amount: row.amount, pattern: row.pattern, risk: row.risk_score, status: row.status, reason: row.reason, date: displayDate(row.created_at), contributions: scored.contributions, modelScores: scored.models, baseRisk: scored.baseRisk, ensembleProbability: scored.ensembleProbability, explanationMethod: scored.explanationMethod, decisionThreshold: scored.decisionThreshold };
+  const scored = await modelScore(row.pattern, row.amount, storedFeatures);
+  return { id: row.id, supplier: row.supplier, amount: row.amount, pattern: row.pattern, risk: row.risk_score, status: row.status, reason: row.reason, date: displayDate(row.created_at), contributions: scored.contributions, modelScores: scored.models, baseRisk: scored.baseRisk, ensembleProbability: scored.ensembleProbability, explanationMethod: scored.explanationMethod, decisionThreshold: scored.decisionThreshold, release: scored.release };
 }
 
 export async function listModelSnapshots() {

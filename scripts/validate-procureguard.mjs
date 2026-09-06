@@ -155,10 +155,35 @@ async function checkApiFlow() {
   if (role === 'Admin' || role === 'Manager') assert(models.response.ok && models.body?.models?.length === 3, `Model registry request failed with ${models.response.status}.`);
   else assert(models.response.status === 403, `Restricted model registry request returned ${models.response.status}, expected 403.`);
 
+  let governanceStatus = null;
+  if (role === 'Admin') {
+    const releasesBefore = await request('/api/model-releases', { headers });
+    assert(releasesBefore.response.ok && releasesBefore.body?.releases?.some((release) => release.status === 'active'), `Model release registry request failed with ${releasesBefore.response.status}.`);
+    const baseline = releasesBefore.body.releases.find((release) => release.status === 'active');
+    const candidateArtifact = {
+      artifactVersion: 'validation-candidate-1', generatedAt: new Date().toISOString(), status: 'pending_approval',
+      features: artifact.features, source: { rows: 50, holdoutRows: 10, label: 'human_review' },
+      model: { runtime: 'logistic_regression', bias: -1.2, weights: Array(12).fill(0.2), threshold: 0.55, riskThreshold: 55, holdoutMetrics: { accuracy: 80, recall: 75, falsePositiveRate: 7 } },
+      evaluation: { holdoutAvailable: true, approvalReady: true, minimumRecommendedHoldoutRows: 10 },
+    };
+    const candidate = await request('/api/model-releases', { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ artifact: candidateArtifact, note: 'Validation candidate registration.' }) });
+    assert(candidate.response.status === 201 && candidate.body?.release?.id, `Candidate registration failed with ${candidate.response.status}.`);
+    const releaseId = candidate.body.release.id;
+    const approve = await request('/api/model-releases', { method: 'PATCH', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ id: releaseId, action: 'approve', note: 'Validation approval after independent holdout.' }) });
+    assert(approve.response.ok, `Candidate approval failed with ${approve.response.status}.`);
+    const activate = await request('/api/model-releases', { method: 'PATCH', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ id: releaseId, action: 'activate', note: 'Validation activation.' }) });
+    assert(activate.response.ok, `Candidate activation failed with ${activate.response.status}.`);
+    const releasesActive = await request('/api/model-releases', { headers });
+    assert(releasesActive.body?.activeReleaseId === releaseId, 'Activated candidate was not selected as the active scoring release.');
+    const rollback = await request('/api/model-releases', { method: 'PATCH', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ id: baseline.id, action: 'rollback', note: 'Validation rollback to development baseline.' }) });
+    assert(rollback.response.ok, `Model rollback failed with ${rollback.response.status}.`);
+    governanceStatus = rollback.response.status;
+  }
+
   const audit = await request('/api/audit', { headers });
   assert(audit.response.ok && Array.isArray(audit.body?.events) && audit.body.events.some((event) => event.event_type === 'import' && event.actor_id), `Audit trail did not record the authenticated write actions.`);
 
-  return { role, transactions: transactions.body.transactions.length, scanned: scan.body.scanned, scanDurationMs: scan.body.durationMs, imported: imported.body.imported, reportStatus: reportResponse.status, explanationStatus: explanation.response.status, reviewStatus: reviewDecision.response.status, evaluationStatus: evaluation.response.status, calibrationStatus: calibration.response.status, modelsStatus: models.response.status, monitoringStatus: monitoring.response.status, reviewQueueStatus: reviewQueue.response.status, resolutionStatus, driftStatus: monitoring.body.monitoring.scoreDistribution.status, usersStatus, auditEvents: audit.body.events.length };
+  return { role, transactions: transactions.body.transactions.length, scanned: scan.body.scanned, scanDurationMs: scan.body.durationMs, imported: imported.body.imported, reportStatus: reportResponse.status, explanationStatus: explanation.response.status, reviewStatus: reviewDecision.response.status, evaluationStatus: evaluation.response.status, calibrationStatus: calibration.response.status, modelsStatus: models.response.status, monitoringStatus: monitoring.response.status, reviewQueueStatus: reviewQueue.response.status, resolutionStatus, governanceStatus, driftStatus: monitoring.body.monitoring.scoreDistribution.status, usersStatus, auditEvents: audit.body.events.length };
 }
 
 const artifactResult = checkArtifact();

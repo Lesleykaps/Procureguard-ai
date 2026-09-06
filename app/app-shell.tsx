@@ -159,6 +159,16 @@ type CalibrationSummary = {
     f2: number;
   } | null;
 };
+type ModelRelease = {
+  id: string;
+  name: string;
+  version: string;
+  status: 'active' | 'candidate' | 'approved' | 'retired' | 'rejected';
+  source: string;
+  createdAt: string;
+  decisionNote: string | null;
+  candidate: { riskThreshold?: number; sourceRows?: number; holdoutRows?: number; holdoutMetrics?: { accuracy?: number; recall?: number; falsePositiveRate?: number } } | null;
+};
 
 const navItems: { key: View; label: string; icon: typeof LayoutDashboard }[] = [
   { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -1839,6 +1849,14 @@ function ModelsView({
   const [calibration, setCalibration] = useState<CalibrationSummary | null>(
     null,
   );
+  const [releases, setReleases] = useState<ModelRelease[]>([]);
+  const [governanceNote, setGovernanceNote] = useState('');
+  const candidateInput = useRef<HTMLInputElement>(null);
+  const refreshReleases = async () => {
+    const response = await fetch('/api/model-releases', { cache: 'no-store' });
+    const payload = (await response.json()) as { releases?: ModelRelease[] };
+    if (response.ok) setReleases(payload.releases ?? []);
+  };
   useEffect(() => {
     let active = true;
     void fetch('/api/models', { cache: 'no-store' })
@@ -1871,6 +1889,36 @@ function ModelsView({
       active = false;
     };
   }, []);
+  useEffect(() => {
+    void fetch('/api/model-releases', { cache: 'no-store' })
+      .then(async (response) => {
+        const payload = (await response.json()) as { releases?: ModelRelease[] };
+        if (response.ok) setReleases(payload.releases ?? []);
+      })
+      .catch(() => undefined);
+  }, []);
+  async function uploadCandidate(file: File) {
+    try {
+      const artifact = JSON.parse(await file.text());
+      const response = await fetch('/api/model-releases', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ artifact, note: governanceNote }) });
+      const payload = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? 'Candidate registration failed.');
+      setGovernanceNote('');
+      await refreshReleases();
+      notify('Candidate registered for independent governance review.');
+    } catch (error) { notify(error instanceof Error ? error.message : 'Candidate registration failed.'); }
+  }
+  async function governRelease(id: string, action: 'approve' | 'reject' | 'activate' | 'rollback') {
+    try {
+      if (!governanceNote.trim()) throw new Error('Enter a decision note before changing model status.');
+      const response = await fetch('/api/model-releases', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, action, note: governanceNote }) });
+      const payload = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? 'Model governance update failed.');
+      setGovernanceNote('');
+      await refreshReleases();
+      notify(`Model release ${action}d and recorded in the audit trail.`);
+    } catch (error) { notify(error instanceof Error ? error.message : 'Model governance update failed.'); }
+  }
   useEffect(() => {
     let active = true;
     void fetch('/api/evaluation', { cache: 'no-store' })
@@ -1965,7 +2013,7 @@ function ModelsView({
               variant="outline"
               className="border-[#1a827f] text-[#2ee0d4]"
             >
-              Current: XGBoost Ensemble
+              Current: {releases.find((release) => release.status === 'active')?.name ?? 'Loading active release'}
             </Badge>
             <Badge
               variant="outline"
@@ -2111,6 +2159,25 @@ function ModelsView({
             </p>
           </div>
         )}
+        <div className="mt-4 rounded-xl border border-[rgba(111,166,188,.16)] bg-[#0a2134] p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="eyebrow">Release control</p>
+              <h2 className="mt-1 text-sm font-semibold">Approval, activation, and rollback</h2>
+            </div>
+            <Badge variant="outline" className="border-[rgba(255,194,74,.35)] text-[#ffc24a]">Admin decision required</Badge>
+          </div>
+          <Textarea value={governanceNote} onChange={(event) => setGovernanceNote(event.target.value)} placeholder="Required governance decision note" className="mt-3 min-h-20 border-[rgba(111,166,188,.25)] bg-[#071a2a] text-[#e8fbfb]" />
+          {role === 'Admin' && <><input ref={candidateInput} className="hidden" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadCandidate(file); event.currentTarget.value = ''; }} />
+            <Button className="mt-3" variant="outline" onClick={() => candidateInput.current?.click()}><Upload size={14} /> Register candidate JSON</Button></>}
+          <div className="mt-4 space-y-2">
+            {releases.length ? releases.map((release) => <div key={release.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[rgba(111,166,188,.12)] p-3 text-xs">
+              <div><strong className="text-[#e8fbfb]">{release.name}</strong> <span className="muted">{release.version} · {release.source}</span><p className="tiny muted mt-1">{release.candidate ? `${release.candidate.sourceRows ?? 0} labels · ${release.candidate.holdoutRows ?? 0} holdout · threshold ${release.candidate.riskThreshold ?? '—'}` : 'Current development baseline'}{release.decisionNote ? ` · ${release.decisionNote}` : ''}</p></div>
+              <div className="flex items-center gap-2"><Badge variant="outline" className={release.status === 'active' ? 'border-[#1a827f] text-[#2ee0d4]' : 'border-[rgba(111,166,188,.3)] text-[#b3cbd1]'}>{release.status}</Badge>{role === 'Admin' && release.status === 'candidate' && <><Button size="sm" variant="outline" onClick={() => void governRelease(release.id, 'approve')}>Approve</Button><Button size="sm" variant="outline" onClick={() => void governRelease(release.id, 'reject')}>Reject</Button></>}{role === 'Admin' && release.status === 'approved' && <Button size="sm" onClick={() => void governRelease(release.id, 'activate')}>Activate</Button>}{role === 'Admin' && release.status === 'retired' && <Button size="sm" variant="outline" onClick={() => void governRelease(release.id, 'rollback')}>Roll back</Button>}</div>
+            </div>) : <p className="tiny muted">Loading model release registry…</p>}
+          </div>
+          <p className="tiny muted mt-3">Activation switches the live scoring artifact. It never occurs automatically; a prior active release remains available for rollback.</p>
+        </div>
       </div>
       <div className="section-card mt-4 flex items-center gap-3 p-4 text-xs">
         <LockKeyhole size={16} className="text-[#ffc24a]" />

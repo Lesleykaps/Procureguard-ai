@@ -55,6 +55,26 @@ export const modelSnapshots = sqliteTable('model_snapshots', {
   createdAt: text('created_at').notNull(),
 });
 
+export const modelReleases = sqliteTable('model_releases', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  version: text('version').notNull(),
+  status: text('status').notNull(),
+  artifactJson: text('artifact_json').notNull(),
+  metricsJson: text('metrics_json').notNull(),
+  source: text('source').notNull(),
+  submittedBy: text('submitted_by').notNull(),
+  approvedBy: text('approved_by'),
+  approvedAt: text('approved_at'),
+  activatedBy: text('activated_by'),
+  activatedAt: text('activated_at'),
+  decisionNote: text('decision_note'),
+  createdAt: text('created_at').notNull(),
+}, (table) => ({
+  statusIdx: index('idx_model_releases_status').on(table.status),
+  createdAtIdx: index('idx_model_releases_created_at').on(table.createdAt),
+}));
+
 export const scanRuns = sqliteTable('scan_runs', {
   id: text('id').primaryKey(),
   actorId: text('actor_id'),

@@ -31,7 +31,7 @@ export async function POST(request: Request) {
     const now = new Date().toISOString();
     const statements = [];
     for (const record of importableRecords) {
-      const risk = scoreTransaction(record.pattern, record.amount, record.modelFeatures);
+      const risk = await scoreTransaction(record.pattern, record.amount, record.modelFeatures);
       const status = 'Open';
       const reason = `Scored from ${record.pattern.toLowerCase()} signal and a $${record.amount.toLocaleString()} procurement value.`;
       statements.push(env.DB.prepare(`INSERT OR IGNORE INTO procurement_transactions (id, supplier, amount, pattern, risk_score, status, reason, source_file, model_features_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)

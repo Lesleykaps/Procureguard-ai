@@ -21,7 +21,7 @@ export async function POST(request: Request) {
     const startedAt = Date.now();
     for (const record of records) {
       const storedFeatures = record.model_features_json ? JSON.parse(record.model_features_json) as number[] : undefined;
-      const risk = scoreTransaction(record.pattern, record.amount, storedFeatures);
+      const risk = await scoreTransaction(record.pattern, record.amount, storedFeatures);
       if (risk >= 55) flagged += 1;
       if (risk >= 80) highRiskCount += 1;
       else if (risk >= 55) mediumRiskCount += 1;
