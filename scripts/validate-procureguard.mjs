@@ -62,6 +62,11 @@ async function checkApiFlow() {
   const imported = await request('/api/transactions/import', { method: 'POST', headers, body: form });
   assert(imported.response.ok && imported.body?.imported === 1, `CSV import failed with ${imported.response.status}.`);
 
+  const reportResponse = await fetch(`${baseUrl}/api/reports?format=csv`, { headers });
+  const reportText = await reportResponse.text();
+  assert(reportResponse.ok && reportResponse.headers.get('content-type')?.includes('text/csv'), `Evidence report export failed with ${reportResponse.status}.`);
+  assert(reportText.includes('ProcureGuard AI evidence report') && reportText.includes(importId), 'Evidence report did not include the imported transaction.');
+
   const explanation = await request('/api/explain?id=PO-10488', { headers });
   if (role === 'Admin' || role === 'Auditor' || role === 'Manager') {
     assert(explanation.response.ok, `Explanation request failed with ${explanation.response.status}.`);
@@ -78,7 +83,7 @@ async function checkApiFlow() {
   const audit = await request('/api/audit', { headers });
   assert(audit.response.ok && Array.isArray(audit.body?.events) && audit.body.events.some((event) => event.event_type === 'import' && event.actor_id), `Audit trail did not record the authenticated write actions.`);
 
-  return { role, transactions: transactions.body.transactions.length, scanned: scan.body.scanned, scanDurationMs: scan.body.durationMs, imported: imported.body.imported, explanationStatus: explanation.response.status, modelsStatus: models.response.status, monitoringStatus: monitoring.response.status, auditEvents: audit.body.events.length };
+  return { role, transactions: transactions.body.transactions.length, scanned: scan.body.scanned, scanDurationMs: scan.body.durationMs, imported: imported.body.imported, reportStatus: reportResponse.status, explanationStatus: explanation.response.status, modelsStatus: models.response.status, monitoringStatus: monitoring.response.status, auditEvents: audit.body.events.length };
 }
 
 const artifactResult = checkArtifact();
