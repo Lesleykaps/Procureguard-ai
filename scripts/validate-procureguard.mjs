@@ -101,8 +101,18 @@ async function checkApiFlow() {
     assert(reviewDecision.response.status === 201 && reviewDecision.body?.review?.decision === 'confirmed_fraud', `Review decision request failed with ${reviewDecision.response.status}.`);
     const reviewHistory = await request('/api/reviews?id=PO-10488', { headers });
     assert(reviewHistory.response.ok && reviewHistory.body?.reviews?.some((review) => review.id === reviewDecision.body.review.id), 'Review history did not return the recorded decision.');
+    const falsePositiveDecision = await request('/api/reviews', { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ transactionId: 'INV-87942', decision: 'false_positive', note: 'Baseline pricing and approval path were verified.' }) });
+    assert(falsePositiveDecision.response.status === 201, `False-positive review request failed with ${falsePositiveDecision.response.status}.`);
   } else {
     assert(reviewDecision.response.status === 403, `Restricted review decision request returned ${reviewDecision.response.status}, expected 403.`);
+  }
+
+  const evaluation = await request('/api/evaluation', { headers });
+  if (role === 'Admin' || role === 'Manager') {
+    assert(evaluation.response.ok && evaluation.body?.evaluation?.sampleCount >= 2, `Model evaluation request failed with ${evaluation.response.status}.`);
+    assert(evaluation.body.evaluation.confusionMatrix && evaluation.body.evaluation.metrics, 'Model evaluation did not return metrics and a confusion matrix.');
+  } else {
+    assert(evaluation.response.status === 403, `Restricted model evaluation request returned ${evaluation.response.status}, expected 403.`);
   }
 
   const models = await request('/api/models', { headers });
@@ -112,7 +122,7 @@ async function checkApiFlow() {
   const audit = await request('/api/audit', { headers });
   assert(audit.response.ok && Array.isArray(audit.body?.events) && audit.body.events.some((event) => event.event_type === 'import' && event.actor_id), `Audit trail did not record the authenticated write actions.`);
 
-  return { role, transactions: transactions.body.transactions.length, scanned: scan.body.scanned, scanDurationMs: scan.body.durationMs, imported: imported.body.imported, reportStatus: reportResponse.status, explanationStatus: explanation.response.status, reviewStatus: reviewDecision.response.status, modelsStatus: models.response.status, monitoringStatus: monitoring.response.status, usersStatus, auditEvents: audit.body.events.length };
+  return { role, transactions: transactions.body.transactions.length, scanned: scan.body.scanned, scanDurationMs: scan.body.durationMs, imported: imported.body.imported, reportStatus: reportResponse.status, explanationStatus: explanation.response.status, reviewStatus: reviewDecision.response.status, evaluationStatus: evaluation.response.status, modelsStatus: models.response.status, monitoringStatus: monitoring.response.status, usersStatus, auditEvents: audit.body.events.length };
 }
 
 const artifactResult = checkArtifact();
