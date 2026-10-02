@@ -1,5 +1,5 @@
 import { getAuthenticatedActor, hasPermission } from '../../../../lib/procurement-db';
-import { env } from 'cloudflare:workers';
+import { assertSupabase, getSupabaseServer } from '../../../../lib/supabase-server';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,17 +15,19 @@ export async function GET(request: Request) {
     const actor = await getAuthenticatedActor(request);
     if (!actor) return Response.json({ error: 'Sign-in required.' }, { status: 401 });
     if (!hasPermission(actor.role, 'transactions:read')) return Response.json({ error: 'Your role cannot view the review queue.' }, { status: 403 });
+    const supabase = getSupabaseServer();
     const [transactionsResult, reviewsResult] = await Promise.all([
-      env.DB.prepare(`SELECT id, supplier, amount, pattern, risk_score, status, reason, created_at FROM procurement_transactions`).all<TransactionRecord>(),
-      env.DB.prepare(`SELECT transaction_id, decision, review_type, actor_id, created_at FROM review_decisions ORDER BY created_at DESC`).all<ReviewRecord>(),
+      supabase.from('procurement_transactions').select('id, supplier, amount, pattern, risk_score, status, reason, created_at'),
+      supabase.from('review_decisions').select('transaction_id, decision, review_type, actor_id, created_at').order('created_at', { ascending: false }),
     ]);
-    const transactions = transactionsResult.results ?? [];
+    assertSupabase(transactionsResult); assertSupabase(reviewsResult);
+    const transactions = (transactionsResult.data ?? []) as TransactionRecord[];
     const latestInitialByTransaction = new Map<string, ReviewRecord>();
     const latestResolutionByTransaction = new Map<string, ReviewRecord>();
     const initialDecisionsByTransaction = new Map<string, Set<string>>();
     const reviewCounts = new Map<string, number>();
     const reviewers = new Set<string>();
-    for (const review of reviewsResult.results ?? []) {
+    for (const review of (reviewsResult.data ?? []) as ReviewRecord[]) {
       reviewers.add(review.actor_id);
       reviewCounts.set(review.transaction_id, (reviewCounts.get(review.transaction_id) ?? 0) + 1);
       if (review.review_type === 'resolution') {

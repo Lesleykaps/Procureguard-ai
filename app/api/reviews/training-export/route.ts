@@ -1,5 +1,5 @@
 import { addAuditEvent, getAuthenticatedActor, hasPermission, modelFeatures } from '../../../../lib/procurement-db';
-import { env } from 'cloudflare:workers';
+import { assertSupabase, getSupabaseServer } from '../../../../lib/supabase-server';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,15 +16,17 @@ export async function GET(request: Request) {
     const actor = await getAuthenticatedActor(request);
     if (!actor) return Response.json({ error: 'Sign-in required.' }, { status: 401 });
     if (!hasPermission(actor.role, 'models:read')) return Response.json({ error: 'Your role cannot export training labels.' }, { status: 403 });
+    const supabase = getSupabaseServer();
     const [transactionsResult, reviewsResult] = await Promise.all([
-      env.DB.prepare(`SELECT id, supplier, amount, pattern, risk_score, model_features_json, created_at FROM procurement_transactions`).all<{ id: string; supplier: string; amount: number; pattern: string; risk_score: number; model_features_json: string | null; created_at: string }>(),
-      env.DB.prepare(`SELECT transaction_id, decision, review_type, note, created_at FROM review_decisions ORDER BY created_at DESC`).all<{ transaction_id: string; decision: string; review_type: string; note: string | null; created_at: string }>(),
+      supabase.from('procurement_transactions').select('id, supplier, amount, pattern, risk_score, model_features_json, created_at'),
+      supabase.from('review_decisions').select('transaction_id, decision, review_type, note, created_at').order('created_at', { ascending: false }),
     ]);
-    const transactionsById = new Map((transactionsResult.results ?? []).map((row) => [row.id, row]));
+    assertSupabase(transactionsResult); assertSupabase(reviewsResult);
+    const transactionsById = new Map((transactionsResult.data ?? []).map((row) => [row.id, row]));
     const latestInitialByTransaction = new Map<string, { decision: string; note: string | null; created_at: string }>();
     const latestResolutionByTransaction = new Map<string, { decision: string; note: string | null; created_at: string }>();
     const initialDecisionsByTransaction = new Map<string, Set<string>>();
-    for (const review of reviewsResult.results ?? []) {
+    for (const review of reviewsResult.data ?? []) {
       if (review.review_type === 'resolution') {
         if (!latestResolutionByTransaction.has(review.transaction_id)) latestResolutionByTransaction.set(review.transaction_id, review);
       } else {
@@ -44,7 +46,7 @@ export async function GET(request: Request) {
       const transaction = transactionsById.get(transactionId);
       if (!transaction || (review.decision !== 'confirmed_fraud' && review.decision !== 'false_positive')) continue;
       if ((initialDecisionsByTransaction.get(transactionId)?.size ?? 0) > 1 && !latestResolutionByTransaction.has(transactionId)) continue;
-      const featureVector = transaction.model_features_json ?? JSON.stringify(modelFeatures(transaction.pattern, transaction.amount));
+      const featureVector = JSON.stringify(transaction.model_features_json ?? modelFeatures(transaction.pattern, transaction.amount));
       rows.push([transaction.id, transaction.supplier, transaction.amount, transaction.pattern, transaction.risk_score, review.decision === 'confirmed_fraud' ? 1 : 0, 'human_review', review.note ?? '', featureVector, transaction.created_at, review.created_at]);
     }
     const csv = rows.map((row) => row.map(csvCell).join(',')).join('\n') + '\n';

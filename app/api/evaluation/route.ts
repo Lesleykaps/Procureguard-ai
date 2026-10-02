@@ -1,5 +1,5 @@
 import { getAuthenticatedActor, hasPermission } from '../../../lib/procurement-db';
-import { env } from 'cloudflare:workers';
+import { assertSupabase, getSupabaseServer } from '../../../lib/supabase-server';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,14 +12,16 @@ export async function GET(request: Request) {
     const actor = await getAuthenticatedActor(request);
     if (!actor) return Response.json({ error: 'Sign-in required.' }, { status: 401 });
     if (!hasPermission(actor.role, 'models:read')) return Response.json({ error: 'Your role cannot view model evaluation.' }, { status: 403 });
+    const supabase = getSupabaseServer();
     const [transactionsResult, reviewsResult] = await Promise.all([
-      env.DB.prepare(`SELECT id, risk_score FROM procurement_transactions`).all<{ id: string; risk_score: number }>(),
-      env.DB.prepare(`SELECT transaction_id, decision, review_type, created_at FROM review_decisions ORDER BY created_at DESC`).all<{ transaction_id: string; decision: string; review_type: string; created_at: string }>(),
+      supabase.from('procurement_transactions').select('id, risk_score'),
+      supabase.from('review_decisions').select('transaction_id, decision, review_type, created_at').order('created_at', { ascending: false }),
     ]);
-    const riskByTransaction = new Map((transactionsResult.results ?? []).map((row) => [row.id, row.risk_score]));
+    assertSupabase(transactionsResult); assertSupabase(reviewsResult);
+    const riskByTransaction = new Map((transactionsResult.data ?? []).map((row) => [row.id, row.risk_score]));
     const latestReviewByTransaction = new Map<string, string>();
     const latestResolutionByTransaction = new Map<string, string>();
-    for (const review of reviewsResult.results ?? []) {
+    for (const review of reviewsResult.data ?? []) {
       if (!latestReviewByTransaction.has(review.transaction_id)) latestReviewByTransaction.set(review.transaction_id, review.decision);
       if (review.review_type === 'resolution' && !latestResolutionByTransaction.has(review.transaction_id)) latestResolutionByTransaction.set(review.transaction_id, review.decision);
     }

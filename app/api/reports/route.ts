@@ -1,5 +1,5 @@
 import { addAuditEvent, getAuthenticatedActor, hasPermission } from '../../../lib/procurement-db';
-import { env } from 'cloudflare:workers';
+import { assertSupabase, getSupabaseServer } from '../../../lib/supabase-server';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,11 +17,14 @@ export async function GET(request: Request) {
     if (!actor) return Response.json({ error: 'Sign-in required.' }, { status: 401 });
     if (!hasPermission(actor.role, 'reports:export')) return Response.json({ error: 'Your role cannot export evidence reports.' }, { status: 403 });
 
-    const [transactionsResult, latestScan] = await Promise.all([
-      env.DB.prepare(`SELECT id, supplier, amount, pattern, risk_score, status, reason, source_file, created_at FROM procurement_transactions ORDER BY risk_score DESC, created_at DESC`).all(),
-      env.DB.prepare(`SELECT records_scanned, flagged_count, mean_risk, max_risk, duration_ms, created_at FROM scan_runs ORDER BY created_at DESC LIMIT 1`).first(),
+    const supabase = getSupabaseServer();
+    const [transactionsResult, latestScanResult] = await Promise.all([
+      supabase.from('procurement_transactions').select('id, supplier, amount, pattern, risk_score, status, reason, source_file, created_at').order('risk_score', { ascending: false }).order('created_at', { ascending: false }),
+      supabase.from('scan_runs').select('records_scanned, flagged_count, mean_risk, max_risk, duration_ms, created_at').order('created_at', { ascending: false }).limit(1).maybeSingle(),
     ]);
-    const transactions = transactionsResult.results ?? [];
+    assertSupabase(transactionsResult); assertSupabase(latestScanResult);
+    const transactions = transactionsResult.data ?? [];
+    const latestScan = latestScanResult.data;
     const lines = [
       ['ProcureGuard AI evidence report'],
       ['Generated at', new Date().toISOString()],

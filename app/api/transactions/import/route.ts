@@ -1,5 +1,5 @@
 import { addAuditEvent, getAuthenticatedActor, hasPermission, parseCsv, riskLevel, scoreTransaction } from '../../../../lib/procurement-db';
-import { env } from 'cloudflare:workers';
+import { assertSupabase, getSupabaseServer } from '../../../../lib/supabase-server';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,29 +19,30 @@ export async function POST(request: Request) {
       seenIds.add(record.id);
       return true;
     });
+    const supabase = getSupabaseServer();
     const existingIds = new Set<string>();
     for (let start = 0; start < uniqueRecords.length; start += 500) {
       const chunk = uniqueRecords.slice(start, start + 500);
-      const placeholders = chunk.map(() => '?').join(', ');
-      const existing = await env.DB.prepare(`SELECT id FROM procurement_transactions WHERE id IN (${placeholders})`).bind(...chunk.map((record) => record.id)).all<{ id: string }>();
-      for (const row of existing.results ?? []) existingIds.add(row.id);
+      const existing = await supabase.from('procurement_transactions').select('id').in('id', chunk.map((record) => record.id));
+      assertSupabase(existing);
+      for (const row of existing.data ?? []) existingIds.add(row.id);
     }
     const importableRecords = uniqueRecords.filter((record) => !existingIds.has(record.id));
     const duplicateCount = records.length - importableRecords.length;
     const now = new Date().toISOString();
-    const statements = [];
+    const transactions = [];
+    const alerts = [];
     for (const record of importableRecords) {
       const risk = await scoreTransaction(record.pattern, record.amount, record.modelFeatures);
       const status = 'Open';
       const reason = `Scored from ${record.pattern.toLowerCase()} signal and a $${record.amount.toLocaleString()} procurement value.`;
-      statements.push(env.DB.prepare(`INSERT OR IGNORE INTO procurement_transactions (id, supplier, amount, pattern, risk_score, status, reason, source_file, model_features_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .bind(record.id, record.supplier, record.amount, record.pattern, risk, status, reason, file.name, JSON.stringify(record.modelFeatures), now));
+      transactions.push({ id: record.id, supplier: record.supplier, amount: record.amount, pattern: record.pattern, risk_score: risk, status, reason, source_file: file.name, model_features_json: record.modelFeatures, created_at: now });
       if (risk >= 55) {
-        statements.push(env.DB.prepare(`INSERT OR IGNORE INTO alerts (id, transaction_id, risk_level, status, assigned_to, created_at, reviewed_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-          .bind(`ALT-${record.id}`, record.id, riskLevel(risk), status, null, now, null));
+        alerts.push({ id: `ALT-${record.id}`, transaction_id: record.id, risk_level: riskLevel(risk), status, assigned_to: null, created_at: now, reviewed_at: null });
       }
     }
-    if (statements.length) await env.DB.batch(statements);
+    if (transactions.length) { const saved = await supabase.from('procurement_transactions').insert(transactions); assertSupabase(saved); }
+    if (alerts.length) { const savedAlerts = await supabase.from('alerts').insert(alerts); assertSupabase(savedAlerts); }
     await addAuditEvent(actor.userId, 'import', `${importableRecords.length} procurement records imported from ${file.name}; ${duplicateCount} duplicates skipped.`);
     return Response.json({ imported: importableRecords.length, duplicates: duplicateCount, rejected: 0 });
   } catch (error) {

@@ -414,10 +414,10 @@ function MetricCard({
 
 export function AppShell({
   authenticatedUser,
-  signOutPath,
+  onSignOut,
 }: {
   authenticatedUser: { displayName: string; email: string };
-  signOutPath: string;
+  onSignOut?: () => void | Promise<void>;
 }) {
   const [view, setView] = useState<View>('dashboard');
   const [role, setRole] = useState<Role>('Auditor');
@@ -903,9 +903,11 @@ export function AppShell({
                 {role}
               </Badge>
             </div>
-            <a href={signOutPath} className="tiny muted hover:text-[#2ee0d4]">
-              Sign out
-            </a>
+            {onSignOut && (
+              <button type="button" onClick={() => void onSignOut()} className="tiny muted hover:text-[#2ee0d4]">
+                Sign out
+              </button>
+            )}
           </div>
           {view === 'dashboard' && (
             <Dashboard

@@ -1,4 +1,4 @@
-import { env } from 'cloudflare:workers';
+import { assertSupabase, getSupabaseServer } from './supabase-server';
 import trainedArtifact from '../ml/model-artifacts.json';
 
 export type RiskStatus = 'Open' | 'Reviewed' | 'Cleared';
@@ -28,7 +28,7 @@ export type FeatureContribution = { label: string; value: number; contribution: 
 
 type TransactionRow = Omit<TransactionRecord, 'risk' | 'date'> & {
   risk_score: number;
-  model_features_json: string | null;
+  model_features_json: unknown | null;
   created_at: string;
 };
 
@@ -41,14 +41,6 @@ const demoRecords = [
   ['INV-88210', 'Apex Medical', 12980, 'Vendor conflict', 79, 'Open', 'Approver and vendor share a matching contact domain from prior records.'],
 ] as const;
 
-function decodeDisplayName(request: Request, email: string) {
-  const encoded = request.headers.get('oai-authenticated-user-full-name');
-  if (encoded && request.headers.get('oai-authenticated-user-full-name-encoding') === 'percent-encoded-utf-8') {
-    try { return decodeURIComponent(encoded); } catch { return email; }
-  }
-  return email;
-}
-
 function normalizeRole(value: unknown): AppRole {
   return value === 'Admin' || value === 'Auditor' || value === 'Procurement Officer' || value === 'Manager' ? value : 'Auditor';
 }
@@ -58,18 +50,21 @@ export function hasPermission(role: AppRole, permission: AppPermission) {
 }
 
 export async function getAuthenticatedActor(request: Request): Promise<AuthenticatedActor | null> {
-  const userId = request.headers.get('oai-authenticated-user-id');
-  const email = request.headers.get('oai-authenticated-user-email');
-  if (!userId || !email) return null;
-  const existing = await env.DB.prepare(`SELECT id, email, display_name, role FROM users WHERE id = ?`).bind(userId).first<{ id: string; email: string; display_name: string; role: string }>();
-  if (!existing) {
-    const count = await env.DB.prepare(`SELECT COUNT(*) AS total FROM users`).first<{ total: number }>();
-    const initialRole: AppRole = Number(count?.total ?? 0) === 0 ? 'Admin' : 'Auditor';
-    await env.DB.prepare(`INSERT OR IGNORE INTO users (id, email, display_name, role, created_at) VALUES (?, ?, ?, ?, ?)`)
-      .bind(userId, email, decodeDisplayName(request, email), initialRole, new Date().toISOString()).run();
+  const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '');
+  if (!token) return null;
+  const supabase = getSupabaseServer();
+  const identity = await supabase.auth.getUser(token);
+  if (identity.error || !identity.data.user?.email) return null;
+  const userId = identity.data.user.id;
+  const email = identity.data.user.email;
+  const displayName = typeof identity.data.user.user_metadata.full_name === 'string' ? identity.data.user.user_metadata.full_name : email;
+  const existing = await supabase.from('app_users').select('id, email, display_name, role').eq('id', userId).maybeSingle();
+  assertSupabase(existing);
+  if (!existing.data) {
+    const inserted = await supabase.from('app_users').insert({ id: userId, email, display_name: displayName, role: 'Auditor' });
+    assertSupabase(inserted);
   }
-  const user = await env.DB.prepare(`SELECT id, email, display_name, role FROM users WHERE id = ?`).bind(userId).first<{ id: string; email: string; display_name: string; role: string }>();
-  if (!user) return null;
+  const user = existing.data ?? { id: userId, email, display_name: displayName, role: 'Auditor' };
   return { userId: user.id, email: user.email, displayName: user.display_name || email, role: normalizeRole(user.role) };
 }
 
@@ -171,10 +166,10 @@ function candidateToArtifact(candidate: { features?: string[]; model?: { runtime
   };
 }
 
-function parseActiveArtifact(value: string | null): ActiveArtifact {
+function parseActiveArtifact(value: unknown | null): ActiveArtifact {
   if (!value) return trainedArtifact as unknown as ActiveArtifact;
   try {
-    const parsed = JSON.parse(value) as { models?: RuntimeModel[]; ensemble?: ActiveArtifact['ensemble']; features?: string[]; model?: unknown };
+    const parsed = (typeof value === 'string' ? JSON.parse(value) : value) as { models?: RuntimeModel[]; ensemble?: ActiveArtifact['ensemble']; features?: string[]; model?: unknown };
     if (Array.isArray(parsed.models) && parsed.ensemble && Array.isArray(parsed.features)) return parsed as ActiveArtifact;
     return candidateToArtifact(parsed as never) ?? (trainedArtifact as unknown as ActiveArtifact);
   } catch { return trainedArtifact as unknown as ActiveArtifact; }
@@ -182,13 +177,15 @@ function parseActiveArtifact(value: string | null): ActiveArtifact {
 
 export async function ensureBaselineModelRelease() {
   const now = new Date().toISOString();
-  await env.DB.prepare(`INSERT OR IGNORE INTO model_releases (id, name, version, status, artifact_json, metrics_json, source, submitted_by, approved_by, approved_at, activated_by, activated_at, decision_note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind('release-synthetic-v1', 'Synthetic ensemble baseline', 'synthetic-v1.0.0', 'active', JSON.stringify(trainedArtifact), JSON.stringify(trainedArtifact.ensemble.metrics), 'synthetic_development', 'system', 'system', now, 'system', now, 'Development baseline; not a production-performance claim.', now).run();
+  const result = await getSupabaseServer().from('model_releases').upsert({ id: 'release-synthetic-v1', name: 'Synthetic ensemble baseline', version: 'synthetic-v1.0.0', status: 'active', artifact_json: trainedArtifact, metrics_json: trainedArtifact.ensemble.metrics, source: 'synthetic_development', submitted_by: 'system', approved_by: 'system', approved_at: now, activated_by: 'system', activated_at: now, decision_note: 'Development baseline; not a production-performance claim.', created_at: now }, { onConflict: 'id', ignoreDuplicates: true });
+  assertSupabase(result);
 }
 
 export async function activeModelRelease() {
   await ensureBaselineModelRelease();
-  return env.DB.prepare(`SELECT id, name, version, status, artifact_json, metrics_json, source, activated_at, created_at FROM model_releases WHERE status = 'active' ORDER BY activated_at DESC, created_at DESC LIMIT 1`).first<{ id: string; name: string; version: string; status: string; artifact_json: string; metrics_json: string; source: string; activated_at: string | null; created_at: string }>();
+  const result = await getSupabaseServer().from('model_releases').select('id, name, version, status, artifact_json, metrics_json, source, activated_at, created_at').eq('status', 'active').order('activated_at', { ascending: false, nullsFirst: false }).order('created_at', { ascending: false }).limit(1).maybeSingle();
+  assertSupabase(result);
+  return result.data;
 }
 
 function modelProbabilities(features: ModelFeatures, artifact: ActiveArtifact) {
@@ -244,9 +241,11 @@ export async function modelScore(pattern: string, amount: number, storedFeatures
 }
 
 export async function explainTransaction(id: string) {
-  const row = await env.DB.prepare(`SELECT id, supplier, amount, pattern, risk_score, status, reason, model_features_json, created_at FROM procurement_transactions WHERE id = ?`).bind(id).first<TransactionRow>();
+  const result = await getSupabaseServer().from('procurement_transactions').select('id, supplier, amount, pattern, risk_score, status, reason, model_features_json, created_at').eq('id', id).maybeSingle();
+  assertSupabase(result);
+  const row = result.data as TransactionRow | null;
   if (!row) return null;
-  const storedFeatures = row.model_features_json ? JSON.parse(row.model_features_json) as ModelFeatures : undefined;
+  const storedFeatures = Array.isArray(row.model_features_json) ? row.model_features_json as ModelFeatures : undefined;
   const scored = await modelScore(row.pattern, row.amount, storedFeatures);
   return { id: row.id, supplier: row.supplier, amount: row.amount, pattern: row.pattern, risk: row.risk_score, status: row.status, reason: row.reason, date: displayDate(row.created_at), contributions: scored.contributions, modelScores: scored.models, baseRisk: scored.baseRisk, ensembleProbability: scored.ensembleProbability, explanationMethod: scored.explanationMethod, decisionThreshold: scored.decisionThreshold, release: scored.release };
 }
@@ -254,14 +253,13 @@ export async function explainTransaction(id: string) {
 export async function listModelSnapshots() {
   const now = new Date().toISOString();
   const ids = ['model-xgboost-v1', 'model-random-forest-v1', 'model-logistic-v1'];
-  const statements = trainedArtifact.models.flatMap((model, index) => [
-    env.DB.prepare(`INSERT OR IGNORE INTO model_snapshots (id, name, version, accuracy, false_positive_rate, is_approved, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(ids[index], model.name, model.version, model.metrics.accuracy, model.metrics.falsePositiveRate, index === 0 ? 1 : 0, now),
-    env.DB.prepare(`UPDATE model_snapshots SET version = ?, accuracy = ?, false_positive_rate = ? WHERE id = ?`).bind(model.version, model.metrics.accuracy, model.metrics.falsePositiveRate, ids[index]),
-  ]);
-  await env.DB.batch(statements);
-  const result = await env.DB.prepare(`SELECT id, name, version, accuracy, false_positive_rate, is_approved, created_at FROM model_snapshots ORDER BY is_approved DESC, accuracy DESC`).all();
+  const supabase = getSupabaseServer();
+  const saved = await supabase.from('model_snapshots').upsert(trainedArtifact.models.map((model, index) => ({ id: ids[index], name: model.name, version: model.version, accuracy: model.metrics.accuracy, false_positive_rate: model.metrics.falsePositiveRate, is_approved: index === 0, created_at: now })), { onConflict: 'id' });
+  assertSupabase(saved);
+  const result = await supabase.from('model_snapshots').select('id, name, version, accuracy, false_positive_rate, is_approved, created_at').order('is_approved', { ascending: false }).order('accuracy', { ascending: false });
+  assertSupabase(result);
   const modelsByName = new Map(trainedArtifact.models.map((model) => [model.name, model]));
-  return (result.results ?? []).map((row) => {
+  return (result.data ?? []).map((row) => {
     const model = modelsByName.get(String(row.name));
     return { ...row, decision_threshold: model?.threshold ?? 0.5, roc_auc: model?.metrics.rocAuc ?? 0.5, validation_false_positive_rate: model?.validationMetrics.falsePositiveRate ?? null };
   });
@@ -273,29 +271,21 @@ export function riskLevel(score: number) {
 
 export async function seedDemoData(actorId = 'system') {
   const now = new Date().toISOString();
-  const statements = [];
-  for (const [id, supplier, amount, pattern, risk, status, reason] of demoRecords) {
-    statements.push(env.DB.prepare(`INSERT OR IGNORE INTO procurement_transactions (id, supplier, amount, pattern, risk_score, status, reason, source_file, model_features_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(id, supplier, amount, pattern, risk, status, reason, 'demo-seed.csv', JSON.stringify(modelFeatures(pattern, amount)), now));
-    if (risk >= 55) {
-      statements.push(env.DB.prepare(`INSERT OR IGNORE INTO alerts (id, transaction_id, risk_level, status, assigned_to, created_at, reviewed_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-        .bind(`ALT-${id}`, id, riskLevel(risk), status, null, now, status === 'Reviewed' ? now : null));
-    }
-  }
-  statements.push(env.DB.prepare(`INSERT OR IGNORE INTO model_snapshots (id, name, version, accuracy, false_positive_rate, is_approved, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .bind('model-xgboost-v1', 'XGBoost Ensemble', 'v1.0.0', 96.4, 7.8, 1, now));
-  statements.push(env.DB.prepare(`INSERT OR IGNORE INTO model_snapshots (id, name, version, accuracy, false_positive_rate, is_approved, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .bind('model-random-forest-v1', 'Random Forest', 'v1.0.0', 93.1, 9.2, 0, now));
-  statements.push(env.DB.prepare(`INSERT OR IGNORE INTO model_snapshots (id, name, version, accuracy, false_positive_rate, is_approved, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .bind('model-logistic-v1', 'Logistic Regression', 'v1.0.0', 88.7, 11.4, 0, now));
-  statements.push(env.DB.prepare(`INSERT INTO audit_events (id, actor_id, event_type, message, entity_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
-    .bind(`AUD-${crypto.randomUUID()}`, actorId, 'seed', 'Demo procurement batch loaded for the first review session.', null, now));
-  await env.DB.batch(statements);
+  const supabase = getSupabaseServer();
+  const transactions = demoRecords.map(([id, supplier, amount, pattern, risk, status, reason]) => ({ id, supplier, amount, pattern, risk_score: risk, status, reason, source_file: 'demo-seed.csv', model_features_json: modelFeatures(pattern, amount), created_at: now }));
+  const savedTransactions = await supabase.from('procurement_transactions').upsert(transactions, { onConflict: 'id', ignoreDuplicates: true });
+  assertSupabase(savedTransactions);
+  const alerts = demoRecords.filter(([, , , , risk]) => risk >= 55).map(([id, , , , risk, status]) => ({ id: `ALT-${id}`, transaction_id: id, risk_level: riskLevel(risk), status, assigned_to: null, created_at: now, reviewed_at: status === 'Reviewed' ? now : null }));
+  const savedAlerts = await supabase.from('alerts').upsert(alerts, { onConflict: 'id', ignoreDuplicates: true });
+  assertSupabase(savedAlerts);
+  await listModelSnapshots();
+  await addAuditEvent(actorId, 'seed', 'Demo procurement batch loaded for the first review session.');
 }
 
 export async function listTransactions() {
-  const result = await env.DB.prepare(`SELECT id, supplier, amount, pattern, risk_score, status, reason, model_features_json, created_at FROM procurement_transactions ORDER BY created_at DESC`).all<TransactionRow>();
-  return (result.results ?? []).map((row) => ({
+  const result = await getSupabaseServer().from('procurement_transactions').select('id, supplier, amount, pattern, risk_score, status, reason, model_features_json, created_at').order('created_at', { ascending: false });
+  assertSupabase(result);
+  return ((result.data ?? []) as TransactionRow[]).map((row) => ({
     id: row.id,
     supplier: row.supplier,
     amount: row.amount,
@@ -308,8 +298,8 @@ export async function listTransactions() {
 }
 
 export async function addAuditEvent(actorId: string, eventType: string, message: string, entityId: string | null = null) {
-  await env.DB.prepare(`INSERT INTO audit_events (id, actor_id, event_type, message, entity_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
-    .bind(`AUD-${crypto.randomUUID()}`, actorId, eventType, message, entityId, new Date().toISOString()).run();
+  const result = await getSupabaseServer().from('audit_events').insert({ id: `AUD-${crypto.randomUUID()}`, actor_id: actorId, event_type: eventType, message, entity_id: entityId, created_at: new Date().toISOString() });
+  assertSupabase(result);
 }
 
 function parseCsvLine(line: string) {

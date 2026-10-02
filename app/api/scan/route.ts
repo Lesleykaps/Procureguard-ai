@@ -1,5 +1,5 @@
 import { addAuditEvent, getAuthenticatedActor, hasPermission, riskLevel, scoreTransaction } from '../../../lib/procurement-db';
-import { env } from 'cloudflare:workers';
+import { assertSupabase, getSupabaseServer } from '../../../lib/supabase-server';
 
 export const dynamic = 'force-dynamic';
 
@@ -8,9 +8,10 @@ export async function POST(request: Request) {
     const actor = await getAuthenticatedActor(request);
     if (!actor) return Response.json({ error: 'Sign-in required.' }, { status: 401 });
     if (!hasPermission(actor.role, 'scan:run')) return Response.json({ error: 'Your role cannot run procurement scans.' }, { status: 403 });
-    const result = await env.DB.prepare(`SELECT id, supplier, amount, pattern, model_features_json FROM procurement_transactions`).all<{ id: string; supplier: string; amount: number; pattern: string; model_features_json: string | null }>();
-    const records = result.results ?? [];
-    const statements = [];
+    const supabase = getSupabaseServer();
+    const result = await supabase.from('procurement_transactions').select('id, supplier, amount, pattern, model_features_json');
+    assertSupabase(result);
+    const records = result.data ?? [];
     let flagged = 0;
     let highRiskCount = 0;
     let mediumRiskCount = 0;
@@ -20,7 +21,7 @@ export async function POST(request: Request) {
     let maxRisk = 0;
     const startedAt = Date.now();
     for (const record of records) {
-      const storedFeatures = record.model_features_json ? JSON.parse(record.model_features_json) as number[] : undefined;
+      const storedFeatures = Array.isArray(record.model_features_json) ? record.model_features_json as number[] : undefined;
       const risk = await scoreTransaction(record.pattern, record.amount, storedFeatures);
       if (risk >= 55) flagged += 1;
       if (risk >= 80) highRiskCount += 1;
@@ -29,25 +30,13 @@ export async function POST(request: Request) {
       if (!record.model_features_json) missingFeatureCount += 1;
       riskTotal += risk;
       maxRisk = Math.max(maxRisk, risk);
-      statements.push(env.DB.prepare(`UPDATE procurement_transactions SET risk_score = ? WHERE id = ?`).bind(risk, record.id));
-      if (risk >= 55) statements.push(env.DB.prepare(`UPDATE alerts SET risk_level = ? WHERE transaction_id = ?`).bind(riskLevel(risk), record.id));
+      const saved = await supabase.from('procurement_transactions').update({ risk_score: risk }).eq('id', record.id);
+      assertSupabase(saved);
+      if (risk >= 55) { const updatedAlert = await supabase.from('alerts').update({ risk_level: riskLevel(risk) }).eq('transaction_id', record.id); assertSupabase(updatedAlert); }
     }
-    if (statements.length) await env.DB.batch(statements);
     const durationMs = Date.now() - startedAt;
-    await env.DB.prepare(`INSERT INTO scan_runs (id, actor_id, records_scanned, flagged_count, high_risk_count, medium_risk_count, low_risk_count, missing_feature_count, mean_risk, max_risk, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
-      `SCAN-${crypto.randomUUID()}`,
-      actor.userId,
-      records.length,
-      flagged,
-      highRiskCount,
-      mediumRiskCount,
-      lowRiskCount,
-      missingFeatureCount,
-      Math.round((riskTotal / Math.max(records.length, 1)) * 10) / 10,
-      maxRisk,
-      durationMs,
-      new Date().toISOString(),
-    ).run();
+    const scan = await supabase.from('scan_runs').insert({ id: `SCAN-${crypto.randomUUID()}`, actor_id: actor.userId, records_scanned: records.length, flagged_count: flagged, high_risk_count: highRiskCount, medium_risk_count: mediumRiskCount, low_risk_count: lowRiskCount, missing_feature_count: missingFeatureCount, mean_risk: Math.round((riskTotal / Math.max(records.length, 1)) * 10) / 10, max_risk: maxRisk, duration_ms: durationMs, created_at: new Date().toISOString() });
+    assertSupabase(scan);
     await addAuditEvent(actor.userId, 'scan', `Scan completed for ${records.length} procurement records; ${flagged} require attention.`);
     return Response.json({ scanned: records.length, flagged, durationMs, meanRisk: Math.round((riskTotal / Math.max(records.length, 1)) * 10) / 10, maxRisk, highRiskCount, mediumRiskCount, lowRiskCount, missingFeatureCount });
   } catch (error) {

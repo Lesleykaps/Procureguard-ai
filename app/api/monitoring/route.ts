@@ -1,5 +1,5 @@
 import { activeModelRelease, getAuthenticatedActor, hasPermission } from '../../../lib/procurement-db';
-import { env } from 'cloudflare:workers';
+import { assertSupabase, getSupabaseServer } from '../../../lib/supabase-server';
 import trainedArtifact from '../../../ml/model-artifacts.json';
 
 export const dynamic = 'force-dynamic';
@@ -10,12 +10,15 @@ export async function GET(request: Request) {
     if (!actor) return Response.json({ error: 'Sign-in required.' }, { status: 401 });
     if (!hasPermission(actor.role, 'transactions:read')) return Response.json({ error: 'Your role cannot view operational monitoring.' }, { status: 403 });
 
-    const [scanResult, totals, activeRelease] = await Promise.all([
-      env.DB.prepare(`SELECT id, actor_id, records_scanned, flagged_count, high_risk_count, medium_risk_count, low_risk_count, missing_feature_count, mean_risk, max_risk, duration_ms, created_at FROM scan_runs ORDER BY created_at DESC LIMIT 10`).all(),
-      env.DB.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN risk_score >= 55 THEN 1 ELSE 0 END), 0) AS flagged, COALESCE(SUM(CASE WHEN status = 'Open' AND risk_score >= 55 THEN 1 ELSE 0 END), 0) AS open_flagged FROM procurement_transactions`).first<{ total: number; flagged: number; open_flagged: number }>(),
+    const supabase = getSupabaseServer();
+    const [scanResult, transactionsResult, activeRelease] = await Promise.all([
+      supabase.from('scan_runs').select('id, actor_id, records_scanned, flagged_count, high_risk_count, medium_risk_count, low_risk_count, missing_feature_count, mean_risk, max_risk, duration_ms, created_at').order('created_at', { ascending: false }).limit(10),
+      supabase.from('procurement_transactions').select('risk_score, status'),
       activeModelRelease(),
     ]);
-    const recentScans = scanResult.results ?? [];
+    assertSupabase(scanResult); assertSupabase(transactionsResult);
+    const recentScans = scanResult.data ?? [];
+    const totals = (transactionsResult.data ?? []).reduce((summary, transaction) => ({ total: summary.total + 1, flagged: summary.flagged + (transaction.risk_score >= 55 ? 1 : 0), open_flagged: summary.open_flagged + (transaction.status === 'Open' && transaction.risk_score >= 55 ? 1 : 0) }), { total: 0, flagged: 0, open_flagged: 0 });
     const latestScan = recentScans[0] as { records_scanned?: number; flagged_count?: number; missing_feature_count?: number } | undefined;
     const recordsScanned = Number(latestScan?.records_scanned ?? 0);
     const flaggedCount = Number(latestScan?.flagged_count ?? 0);

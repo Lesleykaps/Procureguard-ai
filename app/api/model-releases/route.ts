@@ -1,5 +1,5 @@
 import { activeModelRelease, addAuditEvent, ensureBaselineModelRelease, getAuthenticatedActor, hasPermission } from '../../../lib/procurement-db';
-import { env } from 'cloudflare:workers';
+import { assertSupabase, getSupabaseServer } from '../../../lib/supabase-server';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,9 +13,9 @@ type CandidateArtifact = {
   evaluation?: { holdoutAvailable?: boolean; approvalReady?: boolean; minimumRecommendedHoldoutRows?: number };
 };
 
-function safeJson(value: string) { try { return JSON.parse(value) as Record<string, unknown>; } catch { return {}; } }
+function safeJson(value: unknown) { try { return (typeof value === 'string' ? JSON.parse(value) : value) as Record<string, unknown>; } catch { return {}; } }
 
-type ReleaseRow = { id: string; name: string; version: string; status: string; artifact_json: string; metrics_json: string; source: string; submitted_by: string; approved_by: string | null; approved_at: string | null; activated_by: string | null; activated_at: string | null; decision_note: string | null; created_at: string };
+type ReleaseRow = { id: string; name: string; version: string; status: string; artifact_json: unknown; metrics_json: unknown; source: string; submitted_by: string; approved_by: string | null; approved_at: string | null; activated_by: string | null; activated_at: string | null; decision_note: string | null; created_at: string };
 
 function releaseView(row: ReleaseRow) {
   const artifact = safeJson(row.artifact_json) as CandidateArtifact;
@@ -46,9 +46,12 @@ export async function GET(request: Request) {
     if (!actor) return Response.json({ error: 'Sign-in required.' }, { status: 401 });
     if (!hasPermission(actor.role, 'models:read')) return Response.json({ error: 'Your role cannot view model releases.' }, { status: 403 });
     await ensureBaselineModelRelease();
-    const result = await env.DB.prepare(`SELECT id, name, version, status, artifact_json, metrics_json, source, submitted_by, approved_by, approved_at, activated_by, activated_at, decision_note, created_at FROM model_releases ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'approved' THEN 1 WHEN 'candidate' THEN 2 ELSE 3 END, created_at DESC`).all<ReleaseRow>();
+    const result = await getSupabaseServer().from('model_releases').select('id, name, version, status, artifact_json, metrics_json, source, submitted_by, approved_by, approved_at, activated_by, activated_at, decision_note, created_at').order('created_at', { ascending: false });
+    assertSupabase(result);
     const active = await activeModelRelease();
-    return Response.json({ releases: (result.results ?? []).map(releaseView), activeReleaseId: active?.id ?? null });
+    const priority: Record<string, number> = { active: 0, approved: 1, candidate: 2 };
+    const releases = ((result.data ?? []) as ReleaseRow[]).sort((left, right) => (priority[left.status] ?? 3) - (priority[right.status] ?? 3));
+    return Response.json({ releases: releases.map(releaseView), activeReleaseId: active?.id ?? null });
   } catch (error) { return Response.json({ error: error instanceof Error ? error.message : 'Model releases unavailable.' }, { status: 503 }); }
 }
 
@@ -65,8 +68,8 @@ export async function POST(request: Request) {
     const now = new Date().toISOString();
     const id = `REL-${crypto.randomUUID()}`;
     const version = `${candidate.artifactVersion ?? 'candidate'}-${now.slice(0, 10)}`;
-    await env.DB.prepare(`INSERT INTO model_releases (id, name, version, status, artifact_json, metrics_json, source, submitted_by, approved_by, approved_at, activated_by, activated_at, decision_note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(id, 'Reviewer-trained Logistic Regression', version, 'candidate', JSON.stringify(candidate), JSON.stringify(candidate.model?.holdoutMetrics ?? {}), 'reviewed_labels', actor.userId, null, null, null, null, body.note?.trim() || null, now).run();
+    const saved = await getSupabaseServer().from('model_releases').insert({ id, name: 'Reviewer-trained Logistic Regression', version, status: 'candidate', artifact_json: candidate, metrics_json: candidate.model?.holdoutMetrics ?? {}, source: 'reviewed_labels', submitted_by: actor.userId, approved_by: null, approved_at: null, activated_by: null, activated_at: null, decision_note: body.note?.trim() || null, created_at: now });
+    assertSupabase(saved);
     await addAuditEvent(actor.userId, 'model_candidate_registered', `Candidate ${version} registered from reviewer labels; awaiting formal approval.`, id);
     return Response.json({ release: { id, name: 'Reviewer-trained Logistic Regression', version, status: 'candidate' } }, { status: 201 });
   } catch (error) { return Response.json({ error: error instanceof Error ? error.message : 'Unable to register model candidate.' }, { status: 500 }); }
@@ -80,24 +83,25 @@ export async function PATCH(request: Request) {
     const { id, action, note } = await request.json() as { id?: string; action?: 'approve' | 'reject' | 'activate' | 'rollback'; note?: string };
     if (!id || !['approve', 'reject', 'activate', 'rollback'].includes(action ?? '')) return Response.json({ error: 'A release id and valid governance action are required.' }, { status: 400 });
     if (!note?.trim()) return Response.json({ error: 'A decision note is required for the audit trail.' }, { status: 400 });
-    const release = await env.DB.prepare(`SELECT id, name, version, status, artifact_json FROM model_releases WHERE id = ?`).bind(id).first<{ id: string; name: string; version: string; status: string; artifact_json: string }>();
+    const supabase = getSupabaseServer();
+    const found = await supabase.from('model_releases').select('id, name, version, status, artifact_json').eq('id', id).maybeSingle();
+    assertSupabase(found);
+    const release = found.data;
     if (!release) return Response.json({ error: 'Model release not found.' }, { status: 404 });
     const now = new Date().toISOString();
     if (action === 'approve') {
       if (release.status !== 'candidate') return Response.json({ error: 'Only a candidate release can be approved.' }, { status: 409 });
       const errors = validateCandidate(safeJson(release.artifact_json) as CandidateArtifact);
       if (errors.length) return Response.json({ error: errors.join(' ') }, { status: 409 });
-      await env.DB.prepare(`UPDATE model_releases SET status = 'approved', approved_by = ?, approved_at = ?, decision_note = ? WHERE id = ?`).bind(actor.userId, now, note.trim(), id).run();
+      const updated = await supabase.from('model_releases').update({ status: 'approved', approved_by: actor.userId, approved_at: now, decision_note: note.trim() }).eq('id', id); assertSupabase(updated);
     } else if (action === 'reject') {
       if (!['candidate', 'approved'].includes(release.status)) return Response.json({ error: 'Only a candidate or approved release can be rejected.' }, { status: 409 });
-      await env.DB.prepare(`UPDATE model_releases SET status = 'rejected', approved_by = ?, approved_at = ?, decision_note = ? WHERE id = ?`).bind(actor.userId, now, note.trim(), id).run();
+      const updated = await supabase.from('model_releases').update({ status: 'rejected', approved_by: actor.userId, approved_at: now, decision_note: note.trim() }).eq('id', id); assertSupabase(updated);
     } else {
       if (action === 'activate' && release.status !== 'approved') return Response.json({ error: 'Only an approved candidate can be activated.' }, { status: 409 });
       if (action === 'rollback' && !['retired', 'approved'].includes(release.status)) return Response.json({ error: 'Rollback requires a previously active or approved release.' }, { status: 409 });
-      await env.DB.batch([
-        env.DB.prepare(`UPDATE model_releases SET status = 'retired' WHERE status = 'active'`).bind(),
-        env.DB.prepare(`UPDATE model_releases SET status = 'active', activated_by = ?, activated_at = ?, decision_note = ? WHERE id = ?`).bind(actor.userId, now, note.trim(), id),
-      ]);
+      const retired = await supabase.from('model_releases').update({ status: 'retired' }).eq('status', 'active'); assertSupabase(retired);
+      const activated = await supabase.from('model_releases').update({ status: 'active', activated_by: actor.userId, activated_at: now, decision_note: note.trim() }).eq('id', id); assertSupabase(activated);
     }
     await addAuditEvent(actor.userId, `model_${action}`, `Model release ${release.version} ${action}${action === 'activate' || action === 'rollback' ? 'd and is now the active scoring release.' : 'd'}`, id);
     return Response.json({ updated: true, action, id });
