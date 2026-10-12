@@ -1,5 +1,6 @@
 import { addAuditEvent, getAuthenticatedActor, hasPermission } from '../../../lib/procurement-db';
 import { assertSupabase, getSupabaseServer } from '../../../lib/supabase-server';
+import { fetchAllPages } from '../../../lib/supabase-pagination';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,11 +20,11 @@ export async function GET(request: Request) {
 
     const supabase = getSupabaseServer();
     const [transactionsResult, latestScanResult] = await Promise.all([
-      supabase.from('procurement_transactions').select('id, supplier, amount, pattern, risk_score, status, reason, source_file, created_at').order('risk_score', { ascending: false }).order('created_at', { ascending: false }),
+      fetchAllPages((from, to) => supabase.from('procurement_transactions').select('id, supplier, amount, pattern, risk_score, status, reason, source_file, created_at').order('risk_score', { ascending: false }).order('created_at', { ascending: false }).range(from, to)),
       supabase.from('scan_runs').select('records_scanned, flagged_count, mean_risk, max_risk, duration_ms, created_at').order('created_at', { ascending: false }).limit(1).maybeSingle(),
     ]);
-    assertSupabase(transactionsResult); assertSupabase(latestScanResult);
-    const transactions = transactionsResult.data ?? [];
+    assertSupabase(latestScanResult);
+    const transactions = transactionsResult;
     const latestScan = latestScanResult.data;
     const lines = [
       ['ProcureGuard AI evidence report'],

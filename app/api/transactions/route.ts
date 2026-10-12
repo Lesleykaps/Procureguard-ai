@@ -1,5 +1,6 @@
 import { addAuditEvent, getAuthenticatedActor, hasPermission, listTransactions, seedDemoData } from '../../../lib/procurement-db';
 import { assertSupabase, getSupabaseServer } from '../../../lib/supabase-server';
+import { paginationFromRequest } from '../../../lib/supabase-pagination';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,7 +12,9 @@ export async function GET(request: Request) {
     const count = await getSupabaseServer().from('procurement_transactions').select('id', { count: 'exact', head: true });
     assertSupabase(count);
     if (!count.count) await seedDemoData(actor.userId);
-    return Response.json({ transactions: await listTransactions() });
+    const total = count.count || 6;
+    const pagination = paginationFromRequest(request);
+    return Response.json({ transactions: await listTransactions(pagination.from, pagination.to), pagination: { page: pagination.page, pageSize: pagination.pageSize, total, totalPages: Math.max(1, Math.ceil(total / pagination.pageSize)) } });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : 'Database unavailable.' }, { status: 503 });
   }

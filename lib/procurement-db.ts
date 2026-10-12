@@ -1,4 +1,5 @@
 import { assertSupabase, getSupabaseServer } from './supabase-server';
+import { fetchAllPages } from './supabase-pagination';
 import trainedArtifact from '../ml/model-artifacts.json';
 
 export type RiskStatus = 'Open' | 'Reviewed' | 'Cleared';
@@ -28,7 +29,7 @@ export type FeatureContribution = { label: string; value: number; contribution: 
 
 type TransactionRow = Omit<TransactionRecord, 'risk' | 'date'> & {
   risk_score: number;
-  model_features_json: unknown | null;
+  model_features_json: unknown;
   created_at: string;
 };
 
@@ -73,7 +74,22 @@ export function displayDate(isoDate: string) {
 }
 
 export async function scoreTransaction(pattern: string, amount: number, storedFeatures?: ModelFeatures) {
-  return (await modelScore(pattern, amount, storedFeatures)).score;
+  const release = await activeModelRelease();
+  const artifact = parseActiveArtifact(release?.artifact_json ?? null);
+  const features = storedFeatures?.length === artifact.features.length ? storedFeatures : modelFeatures(pattern, amount);
+  return Math.max(5, Math.min(99, Math.round(modelProbabilities(features, artifact).ensemble * 100)));
+}
+
+/** Scores a complete fetched page against one resolved release. It deliberately
+ * omits Shapley computation, which is reserved for a user-requested explanation. */
+export async function scoreTransactionBatch(records: { pattern: string; amount: number; model_features_json: unknown }[]) {
+  const release = await activeModelRelease();
+  const artifact = parseActiveArtifact(release?.artifact_json ?? null);
+  return records.map((record) => {
+    const storedFeatures = Array.isArray(record.model_features_json) ? record.model_features_json as ModelFeatures : undefined;
+    const features = storedFeatures?.length === artifact.features.length ? storedFeatures : modelFeatures(record.pattern, record.amount);
+    return Math.max(5, Math.min(99, Math.round(modelProbabilities(features, artifact).ensemble * 100)));
+  });
 }
 
 function clamp(value: number) { return Math.max(0, Math.min(1, value)); }
@@ -166,7 +182,7 @@ function candidateToArtifact(candidate: { features?: string[]; model?: { runtime
   };
 }
 
-function parseActiveArtifact(value: unknown | null): ActiveArtifact {
+function parseActiveArtifact(value: unknown): ActiveArtifact {
   if (!value) return trainedArtifact as unknown as ActiveArtifact;
   try {
     const parsed = (typeof value === 'string' ? JSON.parse(value) : value) as { models?: RuntimeModel[]; ensemble?: ActiveArtifact['ensemble']; features?: string[]; model?: unknown };
@@ -282,8 +298,8 @@ export async function seedDemoData(actorId = 'system') {
   await addAuditEvent(actorId, 'seed', 'Demo procurement batch loaded for the first review session.');
 }
 
-export async function listTransactions() {
-  const result = await getSupabaseServer().from('procurement_transactions').select('id, supplier, amount, pattern, risk_score, status, reason, model_features_json, created_at').order('created_at', { ascending: false });
+export async function listTransactions(from = 0, to = 49) {
+  const result = await getSupabaseServer().from('procurement_transactions').select('id, supplier, amount, pattern, risk_score, status, reason, model_features_json, created_at').order('created_at', { ascending: false }).range(from, to);
   assertSupabase(result);
   return ((result.data ?? []) as TransactionRow[]).map((row) => ({
     id: row.id,
@@ -296,6 +312,8 @@ export async function listTransactions() {
     date: displayDate(row.created_at),
   }));
 }
+
+export { fetchAllPages };
 
 export async function addAuditEvent(actorId: string, eventType: string, message: string, entityId: string | null = null) {
   const result = await getSupabaseServer().from('audit_events').insert({ id: `AUD-${crypto.randomUUID()}`, actor_id: actorId, event_type: eventType, message, entity_id: entityId, created_at: new Date().toISOString() });

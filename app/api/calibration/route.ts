@@ -1,5 +1,6 @@
 import { getAuthenticatedActor, hasPermission } from '../../../lib/procurement-db';
-import { assertSupabase, getSupabaseServer } from '../../../lib/supabase-server';
+import { getSupabaseServer } from '../../../lib/supabase-server';
+import { fetchAllPages } from '../../../lib/supabase-pagination';
 
 export const dynamic = 'force-dynamic';
 
@@ -40,14 +41,13 @@ export async function GET(request: Request) {
     if (!hasPermission(actor.role, 'models:read')) return Response.json({ error: 'Your role cannot view calibration proposals.' }, { status: 403 });
     const supabase = getSupabaseServer();
     const [transactionsResult, reviewsResult] = await Promise.all([
-      supabase.from('procurement_transactions').select('id, risk_score'),
-      supabase.from('review_decisions').select('transaction_id, decision, review_type, created_at').order('created_at', { ascending: false }),
+      fetchAllPages((from, to) => supabase.from('procurement_transactions').select('id, risk_score').range(from, to)),
+      fetchAllPages((from, to) => supabase.from('review_decisions').select('transaction_id, decision, review_type, created_at').order('created_at', { ascending: false }).range(from, to)),
     ]);
-    assertSupabase(transactionsResult); assertSupabase(reviewsResult);
-    const riskByTransaction = new Map((transactionsResult.data ?? []).map((row) => [row.id, row.risk_score]));
+    const riskByTransaction = new Map(transactionsResult.map((row) => [row.id, row.risk_score]));
     const latestReviewByTransaction = new Map<string, string>();
     const latestResolutionByTransaction = new Map<string, string>();
-    for (const review of reviewsResult.data ?? []) {
+    for (const review of reviewsResult) {
       if (!latestReviewByTransaction.has(review.transaction_id)) latestReviewByTransaction.set(review.transaction_id, review.decision);
       if (review.review_type === 'resolution' && !latestResolutionByTransaction.has(review.transaction_id)) latestResolutionByTransaction.set(review.transaction_id, review.decision);
     }

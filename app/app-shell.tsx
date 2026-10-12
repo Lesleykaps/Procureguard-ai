@@ -422,6 +422,9 @@ export function AppShell({
   const [view, setView] = useState<View>('dashboard');
   const [role, setRole] = useState<Role>('Auditor');
   const [transactions, setTransactions] = useState(seedTransactions);
+  const [transactionPage, setTransactionPage] = useState(1);
+  const [transactionTotal, setTransactionTotal] = useState(seedTransactions.length);
+  const [transactionTotalPages, setTransactionTotalPages] = useState(1);
   const [query, setQuery] = useState('');
   const [alertFilter, setAlertFilter] = useState<
     'All' | Risk | 'Open' | 'Reviewed'
@@ -476,7 +479,7 @@ export function AppShell({
           monitoringResponse,
           reviewQueueResponse,
         ] = await Promise.all([
-          fetch('/api/transactions', { cache: 'no-store' }),
+          fetch(`/api/transactions?page=${transactionPage}&pageSize=50`, { cache: 'no-store' }),
           fetch('/api/audit', { cache: 'no-store' }),
           fetch('/api/models', { cache: 'no-store' }),
           fetch('/api/session', { cache: 'no-store' }),
@@ -485,6 +488,7 @@ export function AppShell({
         ]);
         const transactionPayload = (await transactionsResponse.json()) as {
           transactions?: Txn[];
+          pagination?: { total?: number; totalPages?: number; page?: number };
         };
         if (
           active &&
@@ -492,6 +496,10 @@ export function AppShell({
           transactionPayload.transactions?.length
         )
           setTransactions(transactionPayload.transactions);
+        if (active && transactionsResponse.ok && transactionPayload.pagination) {
+          setTransactionTotal(transactionPayload.pagination.total ?? 0);
+          setTransactionTotalPages(transactionPayload.pagination.totalPages ?? 1);
+        }
         const auditPayload = (await auditResponse.json()) as {
           events?: {
             message: string;
@@ -596,7 +604,7 @@ export function AppShell({
     return () => {
       active = false;
     };
-  }, []);
+  }, [transactionPage]);
 
   function notify(message: string) {
     setToast(message);
@@ -662,12 +670,17 @@ export function AppShell({
             )
           : null,
       });
-      const refreshed = await fetch('/api/transactions', { cache: 'no-store' });
+      const refreshed = await fetch(`/api/transactions?page=${transactionPage}&pageSize=50`, { cache: 'no-store' });
       const refreshedPayload = (await refreshed.json()) as {
         transactions?: Txn[];
+        pagination?: { total?: number; totalPages?: number };
       };
       if (refreshed.ok && refreshedPayload.transactions?.length)
         setTransactions(refreshedPayload.transactions);
+      if (refreshed.ok && refreshedPayload.pagination) {
+        setTransactionTotal(refreshedPayload.pagination.total ?? transactionTotal);
+        setTransactionTotalPages(refreshedPayload.pagination.totalPages ?? transactionTotalPages);
+      }
       setLiveAudit((events) => [
         [
           `Scan completed for ${payload.scanned ?? 0} procurement records; ${payload.flagged ?? 0} require attention.`,
@@ -751,12 +764,17 @@ export function AppShell({
         error?: string;
       };
       if (!response.ok) throw new Error(payload.error ?? 'Import failed');
-      const refreshed = await fetch('/api/transactions', { cache: 'no-store' });
+      const refreshed = await fetch(`/api/transactions?page=${transactionPage}&pageSize=50`, { cache: 'no-store' });
       const refreshedPayload = (await refreshed.json()) as {
         transactions?: Txn[];
+        pagination?: { total?: number; totalPages?: number };
       };
       if (refreshed.ok && refreshedPayload.transactions?.length)
         setTransactions(refreshedPayload.transactions);
+      if (refreshed.ok && refreshedPayload.pagination) {
+        setTransactionTotal(refreshedPayload.pagination.total ?? transactionTotal);
+        setTransactionTotalPages(refreshedPayload.pagination.totalPages ?? transactionTotalPages);
+      }
       setLiveAudit((events) => [
         [
           `${payload.imported ?? 0} procurement records imported from ${file.name}.`,
@@ -934,6 +952,10 @@ export function AppShell({
                 setView('explain');
               }}
               canImport={canImport}
+              page={transactionPage}
+              totalPages={transactionTotalPages}
+              total={transactionTotal}
+              onPageChange={setTransactionPage}
             />
           )}
           {view === 'alerts' && (
@@ -1283,6 +1305,10 @@ function TransactionsView({
   updateStatus: _updateStatus,
   setSelectedId,
   canImport,
+  page,
+  totalPages,
+  total,
+  onPageChange,
 }: {
   transactions: Txn[];
   onUpload: () => void;
@@ -1290,6 +1316,10 @@ function TransactionsView({
   updateStatus: (id: string, status: Txn['status']) => void;
   setSelectedId: (id: string) => void;
   canImport: boolean;
+  page: number;
+  totalPages: number;
+  total: number;
+  onPageChange: (page: number) => void;
 }) {
   return (
     <>
@@ -1326,7 +1356,7 @@ function TransactionsView({
           <button className="filter-button">Cleared</button>
         </div>
         <div className="flex items-center gap-2 text-[11px] muted">
-          <Database size={14} /> {transactions.length} records in view{' '}
+          <Database size={14} /> {transactions.length} of {total} records{' '}
           <Filter size={14} />
         </div>
       </div>
@@ -1380,6 +1410,15 @@ function TransactionsView({
           </tbody>
         </table>
       </section>
+      {totalPages > 1 && (
+        <div className="mt-4 flex items-center justify-between gap-3 text-xs muted">
+          <span>Page {page} of {totalPages}</span>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>Previous</Button>
+            <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => onPageChange(page + 1)}>Next</Button>
+          </div>
+        </div>
+      )}
       <p className="tiny muted mt-4">
         <Info className="mr-1 inline" size={12} /> Accepted files may use common
         aliases such as transaction_id, supplier_name, and amount_usd. Existing

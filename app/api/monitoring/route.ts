@@ -1,5 +1,6 @@
 import { activeModelRelease, getAuthenticatedActor, hasPermission } from '../../../lib/procurement-db';
 import { assertSupabase, getSupabaseServer } from '../../../lib/supabase-server';
+import { fetchAllPages } from '../../../lib/supabase-pagination';
 import trainedArtifact from '../../../ml/model-artifacts.json';
 
 export const dynamic = 'force-dynamic';
@@ -13,12 +14,12 @@ export async function GET(request: Request) {
     const supabase = getSupabaseServer();
     const [scanResult, transactionsResult, activeRelease] = await Promise.all([
       supabase.from('scan_runs').select('id, actor_id, records_scanned, flagged_count, high_risk_count, medium_risk_count, low_risk_count, missing_feature_count, mean_risk, max_risk, duration_ms, created_at').order('created_at', { ascending: false }).limit(10),
-      supabase.from('procurement_transactions').select('risk_score, status'),
+      fetchAllPages((from, to) => supabase.from('procurement_transactions').select('risk_score, status').range(from, to)),
       activeModelRelease(),
     ]);
-    assertSupabase(scanResult); assertSupabase(transactionsResult);
+    assertSupabase(scanResult);
     const recentScans = scanResult.data ?? [];
-    const totals = (transactionsResult.data ?? []).reduce((summary, transaction) => ({ total: summary.total + 1, flagged: summary.flagged + (transaction.risk_score >= 55 ? 1 : 0), open_flagged: summary.open_flagged + (transaction.status === 'Open' && transaction.risk_score >= 55 ? 1 : 0) }), { total: 0, flagged: 0, open_flagged: 0 });
+    const totals = transactionsResult.reduce((summary, transaction) => ({ total: summary.total + 1, flagged: summary.flagged + (transaction.risk_score >= 55 ? 1 : 0), open_flagged: summary.open_flagged + (transaction.status === 'Open' && transaction.risk_score >= 55 ? 1 : 0) }), { total: 0, flagged: 0, open_flagged: 0 });
     const latestScan = recentScans[0] as { records_scanned?: number; flagged_count?: number; missing_feature_count?: number } | undefined;
     const recordsScanned = Number(latestScan?.records_scanned ?? 0);
     const flaggedCount = Number(latestScan?.flagged_count ?? 0);

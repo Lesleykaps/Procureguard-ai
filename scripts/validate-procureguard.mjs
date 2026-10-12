@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
+import { createClient } from '@supabase/supabase-js';
 
-const baseUrl = process.env.PROCUREGUARD_BASE_URL ?? 'http://127.0.0.1:5173';
+const baseUrl = process.env.PROCUREGUARD_BASE_URL ?? 'http://localhost:5173';
 const artifact = JSON.parse(await readFile(new URL('../ml/model-artifacts.json', import.meta.url), 'utf8'));
 
 function assert(condition, message) {
@@ -28,13 +29,23 @@ async function request(path, options = {}) {
   return { response, body };
 }
 
+async function authenticatedHeaders() {
+  const url = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL;
+  const key = process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  const password = process.env.DEMO_ACCOUNT_PASSWORD;
+  const email = process.env.PROCUREGUARD_TEST_EMAIL ?? 'admin@procureguard.demo';
+  assert(url && key && password, 'Set SUPABASE_URL, VITE_SUPABASE_PUBLISHABLE_KEY, and DEMO_ACCOUNT_PASSWORD before running API validation.');
+  const client = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+  const login = await client.auth.signInWithPassword({ email, password });
+  assert(!login.error && login.data.session?.access_token, `Demo sign-in failed: ${login.error?.message ?? 'no session returned'}.`);
+  return { Authorization: `Bearer ${login.data.session.access_token}` };
+}
+
 async function checkApiFlow() {
   const unauthenticated = await request('/api/session');
   assert(unauthenticated.response.status === 401, `Unauthenticated session check returned ${unauthenticated.response.status}, expected 401.`);
 
-  const identity = `verification-${Date.now()}`;
-  const headers = { 'oai-authenticated-user-id': identity, 'oai-authenticated-user-email': `${identity}@example.test` };
-  if (process.env.PROCUREGUARD_AUTH_COOKIE) headers.cookie = process.env.PROCUREGUARD_AUTH_COOKIE;
+  const headers = await authenticatedHeaders();
   const session = await request('/api/session', { headers });
   assert(session.response.ok && session.body?.user?.role, `Authenticated session check failed with ${session.response.status}.`);
   const role = session.body.user.role;

@@ -1,7 +1,7 @@
 'use client';
 
 import { createClient } from '@supabase/supabase-js';
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AppShell } from './app-shell';
 
 const browserEnv = (import.meta as unknown as { env: Record<string, string | undefined> }).env;
@@ -44,7 +44,7 @@ export function AuthGate() {
     return () => { active = false; subscription.unsubscribe(); if (originalFetch.current) window.fetch = originalFetch.current; };
   }, []);
 
-  async function signIn(event: FormEvent) {
+  async function signIn(event: { preventDefault: () => void }) {
     event.preventDefault(); setError('');
     const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
     if (signInError) setError('The email address or password is incorrect.');

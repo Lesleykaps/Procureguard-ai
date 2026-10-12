@@ -1,5 +1,6 @@
 import { addAuditEvent, getAuthenticatedActor, hasPermission, modelFeatures } from '../../../../lib/procurement-db';
-import { assertSupabase, getSupabaseServer } from '../../../../lib/supabase-server';
+import { getSupabaseServer } from '../../../../lib/supabase-server';
+import { fetchAllPages } from '../../../../lib/supabase-pagination';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,15 +19,14 @@ export async function GET(request: Request) {
     if (!hasPermission(actor.role, 'models:read')) return Response.json({ error: 'Your role cannot export training labels.' }, { status: 403 });
     const supabase = getSupabaseServer();
     const [transactionsResult, reviewsResult] = await Promise.all([
-      supabase.from('procurement_transactions').select('id, supplier, amount, pattern, risk_score, model_features_json, created_at'),
-      supabase.from('review_decisions').select('transaction_id, decision, review_type, note, created_at').order('created_at', { ascending: false }),
+      fetchAllPages((from, to) => supabase.from('procurement_transactions').select('id, supplier, amount, pattern, risk_score, model_features_json, created_at').range(from, to)),
+      fetchAllPages((from, to) => supabase.from('review_decisions').select('transaction_id, decision, review_type, note, created_at').order('created_at', { ascending: false }).range(from, to)),
     ]);
-    assertSupabase(transactionsResult); assertSupabase(reviewsResult);
-    const transactionsById = new Map((transactionsResult.data ?? []).map((row) => [row.id, row]));
+    const transactionsById = new Map(transactionsResult.map((row) => [row.id, row]));
     const latestInitialByTransaction = new Map<string, { decision: string; note: string | null; created_at: string }>();
     const latestResolutionByTransaction = new Map<string, { decision: string; note: string | null; created_at: string }>();
     const initialDecisionsByTransaction = new Map<string, Set<string>>();
-    for (const review of reviewsResult.data ?? []) {
+    for (const review of reviewsResult) {
       if (review.review_type === 'resolution') {
         if (!latestResolutionByTransaction.has(review.transaction_id)) latestResolutionByTransaction.set(review.transaction_id, review);
       } else {

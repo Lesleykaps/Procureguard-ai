@@ -2,6 +2,8 @@
 
 `synthetic_procurement_transactions.csv` contains 12,000 generated procurement records for development and model-pipeline testing. It is entirely synthetic and must not be presented as evidence of real procurement fraud.
 
+`benchmark_creditcard_fraud.mjs` is a separate external benchmark using Kaggle's `mlg-ulb/creditcardfraud` data. It uses a chronological split, applies SMOTE-style interpolation only to the training data, and writes `creditcard-benchmark-report.json`. Its results are evidence for the imbalance-handling methodology only; its anonymized credit-card features must not be claimed as procurement-model performance.
+
 The generator creates an intentionally imbalanced target with approximately 15–20% labelled fraud cases. Fraud labels are generated from interpretable scenarios: duplicate invoices, invoice splitting, single-bid awards, overbilling, and vendor conflicts. The generator also adds noise so the task is not perfectly separable.
 
 Rows are assigned deterministically to `train`, `validation`, or `test` using a stable hash of the transaction id. The training pipeline should fit preprocessing and SMOTE only on the `train` split, use `validation` for threshold selection, and reserve `test` for the final report.

@@ -1,0 +1,93 @@
+{
+  "source": {
+    "provider": "Kaggle",
+    "dataset": "mlg-ulb/creditcardfraud",
+    "localFile": "ml/external/creditcardfraud/creditcard.csv",
+    "domain": "anonymized credit-card transactions; external fraud benchmark only"
+  },
+  "generatedAt": "2026-10-12T06:03:23.474Z",
+  "split": {
+    "strategy": "chronological by source order",
+    "train": {
+      "positives": 384,
+      "sampledNegatives": 40000
+    },
+    "validationRows": 42721,
+    "testRows": 42721
+  },
+  "imbalanceHandling": {
+    "method": "SMOTE-style interpolation on training positives only",
+    "targetNegativeToPositiveRatio": 4,
+    "trainingRowsAfterSmote": 50000,
+    "note": "Validation and test sets remain untouched."
+  },
+  "model": {
+    "type": "regularized logistic regression",
+    "features": [
+      "Time",
+      "V1",
+      "V2",
+      "V3",
+      "V4",
+      "V5",
+      "V6",
+      "V7",
+      "V8",
+      "V9",
+      "V10",
+      "V11",
+      "V12",
+      "V13",
+      "V14",
+      "V15",
+      "V16",
+      "V17",
+      "V18",
+      "V19",
+      "V20",
+      "V21",
+      "V22",
+      "V23",
+      "V24",
+      "V25",
+      "V26",
+      "V27",
+      "V28",
+      "Amount"
+    ],
+    "epochs": 45,
+    "learningRate": 0.045
+  },
+  "thresholdSelection": {
+    "split": "validation",
+    "criterion": "maximize F2 subject to validation false-positive rate <= 3%",
+    "selected": {
+      "threshold": 0.95,
+      "truePositive": 49,
+      "falsePositive": 36,
+      "trueNegative": 42629,
+      "falseNegative": 7,
+      "accuracy": 99.899,
+      "precision": 57.647,
+      "recall": 87.5,
+      "falsePositiveRate": 0.0844,
+      "f2": 79.288
+    }
+  },
+  "heldOutTest": {
+    "metrics": {
+      "threshold": 0.95,
+      "truePositive": 39,
+      "falsePositive": 34,
+      "trueNegative": 42635,
+      "falseNegative": 13,
+      "accuracy": 99.89,
+      "precision": 53.425,
+      "recall": 75,
+      "falsePositiveRate": 0.0797,
+      "f2": 69.395
+    },
+    "rocAuc": 0.95832
+  },
+  "limitation": "This benchmark does not establish procurement-fraud performance and is not deployed in ProcureGuard scoring."
+}
