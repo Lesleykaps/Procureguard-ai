@@ -421,6 +421,8 @@ export function AppShell({
 }) {
   const [view, setView] = useState<View>('dashboard');
   const [role, setRole] = useState<Role>('Auditor');
+  const [isLiveDataLoading, setIsLiveDataLoading] = useState(true);
+  const [liveDataError, setLiveDataError] = useState('');
   const [transactions, setTransactions] = useState(seedTransactions);
   const [transactionPage, setTransactionPage] = useState(1);
   const [transactionTotal, setTransactionTotal] = useState(seedTransactions.length);
@@ -597,7 +599,9 @@ export function AppShell({
             coverage: reviewQueuePayload.coverage,
           });
       } catch {
-        // The seeded client view remains usable while the local or hosted data service is unavailable.
+        if (active) setLiveDataError('The secure workspace could not load. Check the database connection, then refresh the page.');
+      } finally {
+        if (active) setIsLiveDataLoading(false);
       }
     }
     void loadLiveData();
@@ -828,6 +832,14 @@ export function AppShell({
   const canReview = actionPermissions[role].review;
   const canScan = actionPermissions[role].scan;
 
+  if (isLiveDataLoading) {
+    return <main className="min-h-screen grid place-items-center bg-[#07131d] text-center text-[#dceff1] p-6"><div><div className="mx-auto mb-4 h-9 w-9 animate-spin rounded-full border-2 border-[#0dd3da] border-t-transparent" /><h1 className="text-lg font-semibold">Loading secure workspace</h1><p className="mt-2 text-sm text-[#8aa9b7]">Retrieving your role and the latest procurement intelligence…</p></div></main>;
+  }
+
+  if (liveDataError) {
+    return <main className="min-h-screen grid place-items-center bg-[#07131d] text-center text-[#dceff1] p-6"><div className="max-w-md"><h1 className="text-lg font-semibold">Workspace unavailable</h1><p className="mt-2 text-sm text-[#8aa9b7]">{liveDataError}</p><Button className="mt-5" onClick={() => window.location.reload()}>Try again</Button></div></main>;
+  }
+
   return (
     <div className="app-grid">
       <aside className="sidebar">
@@ -1037,7 +1049,7 @@ function Dashboard({
   canScan: boolean;
 }) {
   const highRisk = transactions.filter((item) => item.risk >= 80);
-  const openHighRisk = highRisk.filter((item) => item.status === 'Open').length;
+  const highRiskCount = monitoringSummary?.highRiskCount ?? 0;
   return (
     <>
       <SectionHeader
@@ -1058,10 +1070,10 @@ function Dashboard({
       <div className="metric-grid">
         <MetricCard
           label="High-risk alerts"
-          value={String(openHighRisk)}
+          value={String(highRiskCount)}
           note={
             <>
-              <strong>{highRisk.length}</strong> high-risk records tracked
+              Latest full-scan total
             </>
           }
           icon={<AlertTriangle size={14} className="text-[#ff5877]" />}

@@ -5,9 +5,16 @@ import { useEffect, useRef, useState } from 'react';
 import { AppShell } from './app-shell';
 
 const browserEnv = (import.meta as unknown as { env: Record<string, string | undefined> }).env;
-const supabase = createClient(browserEnv.VITE_SUPABASE_URL ?? '', browserEnv.VITE_SUPABASE_PUBLISHABLE_KEY ?? '', {
-  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
-});
+type BrowserSupabaseRegistry = typeof globalThis & { __procureguardSupabaseClient?: ReturnType<typeof createClient> };
+
+// Vinext hot reload can re-evaluate this module. Keeping one client prevents
+// duplicate auth listeners and stale development renders.
+const registry = globalThis as BrowserSupabaseRegistry;
+const supabase = registry.__procureguardSupabaseClient ??= createClient(
+  browserEnv.VITE_SUPABASE_URL ?? '',
+  browserEnv.VITE_SUPABASE_PUBLISHABLE_KEY ?? '',
+  { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false } },
+);
 
 type SessionUser = { email: string; displayName: string };
 
